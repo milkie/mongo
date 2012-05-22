@@ -18,6 +18,7 @@
 
 #include "mongo/db/oplog.h"
 #include "mongo/db/client.h"
+#include "mongo/db/repl/rs_thread_pool.h"
 
 namespace mongo {
 namespace replset {
@@ -36,6 +37,11 @@ namespace replset {
         void oplogApplication();
         BSONObj* peek();
         void consume();
+    private:
+        static const int replWriterThreadCount = 32;
+        ThreadPool _writerPool;
+        void fillWriterQueues(ThreadPool& pool, std::vector<const BSONObj*> ops);
+        bool multiApply(std::vector<const BSONObj*> ops);
     };
 
     /**

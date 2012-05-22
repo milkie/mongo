@@ -16,19 +16,26 @@
 
 #include "mongo/pch.h"
 
+#include "mongo/db/repl/rs_sync.h"
+
+#include "third_party/murmurhash3/MurmurHash3.h"
+
 #include "mongo/db/client.h"
 #include "mongo/db/commands/fsync.h"
 #include "mongo/db/repl.h"
 #include "mongo/db/repl/bgsync.h"
 #include "mongo/db/repl/rs.h"
 #include "mongo/db/repl/rs_sync.h"
+#include "mongo/db/repl/rs_thread_pool.h"
 
 namespace mongo {
 
     using namespace bson;
     extern unsigned replSetForceInitialSyncFailure;
 
-    replset::SyncTail::SyncTail(BackgroundSyncInterface *q) : Sync(""), _queue(q) {}
+    replset::SyncTail::SyncTail(BackgroundSyncInterface *q) : 
+        Sync(""), _queue(q), _writerPool(replWriterThreadCount)
+    {}
 
     replset::SyncTail::~SyncTail() {}
 
@@ -64,6 +71,52 @@ namespace mongo {
         ctx.getClient()->curop()->reset();
         return !applyOperation_inlock(o);
     }
+
+    namespace replset {
+    void multiSyncApply( OpPkg op ) {
+        SyncTail* st = op.st;
+        const BSONObj *o = op.op;
+        fassert(16246,st->syncApply(*o));
+    }
+    }
+
+    bool replset::SyncTail::multiApply( std::vector<const BSONObj*> ops ) {
+/*
+        if (prefetch) {
+            prefetchOps();
+        }
+*/
+
+        fillWriterQueues( _writerPool, ops );
+        _writerPool.setTask( &mongo::replset::multiSyncApply );
+        _writerPool.go();
+
+        // move lastoptimewritten afterward
+        return true;
+    }
+
+    /* fills the writer thread's queues with operations.
+       hashes on namespace name to ensure that ops on a given ns
+       are applied in order.
+    */
+    void replset::SyncTail::fillWriterQueues(replset::ThreadPool& pool, std::vector<const BSONObj*> ops) {
+        for (std::vector<const BSONObj*>::const_iterator it = ops.begin();
+             it != ops.end();
+             ++it) {
+            const BSONElement e = (*it)->getField("ns");
+            verify(e.type() == String);
+            const char* ns = e.valuestr();
+            int len = e.valuestrsize();    
+            uint32_t hash;
+            MurmurHash3_x86_32( ns, len, 0, &hash);
+
+            OpPkg oppkg;
+            oppkg.st = this;
+            oppkg.op = *it;
+            pool._workers[ hash % replWriterThreadCount ]->enqueue(oppkg);
+        }
+    }
+            
 
     /* initial oplog application, during initial sync, after cloning.
        @return false on failure.
