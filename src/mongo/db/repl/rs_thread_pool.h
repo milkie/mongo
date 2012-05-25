@@ -45,6 +45,7 @@ namespace replset {
         // blocks until all worker queues are exhausted
         void go();
 
+        void waitForEnd();
         void waitForWork();
 
         std::vector< Worker* > _workers;

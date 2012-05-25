@@ -30,6 +30,7 @@ namespace replset {
     public:
         virtual ~BackgroundSyncInterface();
         virtual BSONObj* peek() = 0;
+        virtual void blockingPeek() = 0;
         virtual void consume() = 0;
         virtual Member* getSyncTarget() = 0;
     };
@@ -53,9 +54,8 @@ namespace replset {
         boost::mutex _mutex;
 
         // Production thread
-        BlockingQueue<BSONObj> _buffer;
+        BlockingQueue<BSONObj*> _buffer;
 
-        BSONObj _currentOp;
         OpTime _lastOpTimeFetched;
         long long _lastH;
         // if produce thread should be running
@@ -115,6 +115,7 @@ namespace replset {
         // Gets the head of the buffer, but does not remove it. Returns a pointer to the list
         // element.
         virtual BSONObj* peek();
+        virtual void blockingPeek();
 
         // called by sync thread when it has applied an op
         virtual void consume();

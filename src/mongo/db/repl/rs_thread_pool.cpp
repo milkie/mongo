@@ -24,6 +24,17 @@
 
 namespace mongo {
     namespace replset {
+
+        void ThreadPool::waitForEnd() {
+            SimpleMutex::scoped_lock lck(_batchMx);
+            while (_running) {
+                _batchCV.wait(_batchMx);
+            }
+            --_finishedCount;
+            if (_finishedCount == 0)
+                _finishCV.notify_one();
+        }
+
         void ThreadPool::waitForWork() {
             SimpleMutex::scoped_lock lck(_batchMx);
             while (!_running) {
@@ -36,6 +47,7 @@ namespace mongo {
             ++_finishedCount;
             if (_finishedCount == _nThreads) {
                 _finishCV.notify_one();
+                return;
             }
             verify(_finishedCount < _nThreads);
         }
@@ -72,7 +84,13 @@ namespace mongo {
                 _finishCV.wait(_batchMx);
             }
             _running = false;
-            _finishedCount = 0;
+            // move threads from waitForEnd 
+            // to waitForWork
+            _batchCV.notify_all();
+            while (_finishedCount > 0) {
+                _finishCV.wait(_batchMx);
+            }
+
         }
 
    
@@ -96,6 +114,7 @@ namespace mongo {
                     _queue.pop_front();
                 }
                 _pool.incrementFinished();
+                _pool.waitForEnd();
             }
         }
     } // namespace replset

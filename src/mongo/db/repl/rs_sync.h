@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <deque>
+
 #include "mongo/db/oplog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/repl/rs_thread_pool.h"
@@ -32,16 +34,24 @@ namespace replset {
         BackgroundSyncInterface* _queue;
     public:
         virtual ~SyncTail();
-        SyncTail(BackgroundSyncInterface *q);
+        SyncTail(BackgroundSyncInterface *q, ThreadPool& writerPool);
         virtual bool syncApply(const BSONObj &o);
         void oplogApplication();
         BSONObj* peek();
         void consume();
+
+        // returns true if we should continue waiting for BSONObjs, false if we should
+        // stop waiting and apply the queue we have.  Only returns false if !ops.empty().
+        bool tryPopAndWaitForMore(std::deque<const BSONObj*>& ops);
+        void clearOps(std::deque<const BSONObj*>& ops);
+        bool multiApply(std::deque<const BSONObj*>& ops);
     private:
-        static const int replWriterThreadCount = 32;
-        ThreadPool _writerPool;
-        void fillWriterQueues(ThreadPool& pool, std::vector<const BSONObj*> ops);
-        bool multiApply(std::vector<const BSONObj*> ops);
+        replset::ThreadPool& _writerPool;
+        void prefetchOps(std::deque<const BSONObj*>& ops);
+        static void prefetchOp(const BSONObj* op);
+        void fillWriterQueues(ThreadPool& pool, std::deque<const BSONObj*>& ops);
+
+        void handleSlaveDelay(const BSONObj& op);
     };
 
     /**
@@ -50,9 +60,8 @@ namespace replset {
     class InitialSync : public SyncTail {
     public:
         virtual ~InitialSync();
-        InitialSync(BackgroundSyncInterface *q);
+        InitialSync(BackgroundSyncInterface *q, ThreadPool& pool);
         bool oplogApplication(const BSONObj& applyGTEObj, const BSONObj& minValidObj);
-        virtual void applyOp(const BSONObj& o);
     };
 
     // TODO: move hbmsg into an error-keeping class (SERVER-4444)

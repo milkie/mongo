@@ -54,6 +54,7 @@ namespace mongo {
         DiskLoc unusedDl; // unused
         IndexInterface::IndexInserter inserter;
         NamespaceDetails *nsd = nsdetails(ns);
+        if (!nsd) return; // maybe not opened yet
 
         // includes all indexes, including ones
         // in the process of being built

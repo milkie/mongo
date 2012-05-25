@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include "mongo/util/concurrency/list.h"
 #include "../../util/net/hostandport.h"
 #include "../../util/concurrency/race.h"
 #include "health.h"

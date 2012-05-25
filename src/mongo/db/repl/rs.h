@@ -18,18 +18,20 @@
 
 #pragma once
 
-#include "../../util/concurrency/list.h"
-#include "../../util/concurrency/value.h"
-#include "../../util/concurrency/msg.h"
-#include "../../util/net/hostandport.h"
-#include "../commands.h"
-#include "../oplog.h"
-#include "../oplogreader.h"
-#include "rs_exception.h"
-#include "rs_optime.h"
-#include "rs_member.h"
-#include "rs_config.h"
+#include "mongo/db/commands.h"
+#include "mongo/db/oplog.h"
+#include "mongo/db/oplogreader.h"
+#include "mongo/db/repl/rs_config.h"
+#include "mongo/db/repl/rs_exception.h"
+#include "mongo/db/repl/rs_member.h"
+#include "mongo/db/repl/rs_optime.h"
 #include "mongo/db/repl/rs_sync.h"
+#include "mongo/db/repl/rs_thread_pool.h"
+#include "mongo/util/concurrency/list.h"
+#include "mongo/util/concurrency/msg.h"
+#include "mongo/util/concurrency/thread_pool.h"
+#include "mongo/util/concurrency/value.h"
+#include "mongo/util/net/hostandport.h"
 
 /**
  * Order of Events
@@ -495,24 +497,33 @@ namespace mongo {
         friend class Consensus;
 
     private:
-        void _syncDoInitialSync();
         bool _syncDoInitialSync_clone( const char *master, const list<string>& dbs , bool dataPass );
         bool _syncDoInitialSync_applyToHead( replset::InitialSync& init, OplogReader* r , 
                                              const Member* source, const BSONObj& lastOp, 
                                              BSONObj& minValidOut);
-        void syncDoInitialSync();
-        void _syncThread();
+        void _syncDoInitialSync(replset::ThreadPool& writerPool);
+        void syncDoInitialSync(replset::ThreadPool& writerPool);
+        void _syncThread(replset::ThreadPool& writerPool);
         void syncTail();
         unsigned _syncRollback(OplogReader& r);
         void syncFixUp(HowToFixUp& h, OplogReader& r);
 
         // keep a list of hosts that we've tried recently that didn't work
         map<string,time_t> _veto;
+        // persistent pool of worker threads for syncing
+        replset::ThreadPool _writerPool;
+        // persistent pool of worker threads for prefetching
+        threadpool::ThreadPool _prefetcherPool;
+
     public:
+        static const int replWriterThreadCount = 32;
+        static const int replPrefetcherThreadCount = 32;
+        threadpool::ThreadPool& getPrefetchPool() { return _prefetcherPool; }
+
         const ReplSetConfig::MemberCfg& myConfig() const { return _config; }
         bool tryToGoLiveAsASecondary(OpTime&); // readlocks
         void syncRollback(OplogReader& r);
-        void syncThread();
+        void syncThread(replset::ThreadPool& pool);
         const OpTime lastOtherOpTime() const;
     };
 
@@ -535,7 +546,7 @@ namespace mongo {
 
         virtual bool buildIndexes() const { return _buildIndexes; }
 
-        /* call after constructing to start - returns fairly quickly after la[unching its threads */
+        /* call after constructing to start - returns fairly quickly after launching its threads */
         void go() { _go(); }
         void shutdown();
 
@@ -549,6 +560,7 @@ namespace mongo {
         void summarizeAsHtml(stringstream& ss) const { _summarizeAsHtml(ss); }
         void summarizeStatus(BSONObjBuilder& b) const  { _summarizeStatus(b); }
         void fillIsMaster(BSONObjBuilder& b) { _fillIsMaster(b); }
+        threadpool::ThreadPool& getPrefetchPool() { return ReplSetImpl::getPrefetchPool(); }
 
         /**
          * We have a new config (reconfig) - apply it.

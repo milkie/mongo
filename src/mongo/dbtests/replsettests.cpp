@@ -79,7 +79,7 @@ namespace ReplSetTests {
     class MockInitialSync : public replset::InitialSync {
         int step;
     public:
-        MockInitialSync() : InitialSync(0), step(0), failOnStep(SUCCEED), retry(true) {}
+        MockInitialSync(replset::ThreadPool& tp) : InitialSync(0, tp), step(0), failOnStep(SUCCEED), retry(true) {}
 
         enum FailOn {SUCCEED, FAIL_FIRST_APPLY, FAIL_BOTH_APPLY};
 
@@ -118,8 +118,8 @@ namespace ReplSetTests {
             BSONObjBuilder b;
             b.appendTimestamp("ts", o.asLL());
             BSONObj obj = b.obj();
-
-            MockInitialSync mock;
+            replset::ThreadPool tp(1);
+            MockInitialSync mock(tp);
 
             // all three should succeed
             mock.applyOp(obj);
@@ -131,7 +131,7 @@ namespace ReplSetTests {
             mock.applyOp(obj);
 
             // force failure
-            MockInitialSync mock2;
+            MockInitialSync mock2(tp);
             mock2.failOnStep = MockInitialSync::FAIL_BOTH_APPLY;
 
             ASSERT_THROWS(mock2.applyOp(obj), UserException);
@@ -141,7 +141,7 @@ namespace ReplSetTests {
     class SyncTest2 : public replset::InitialSync {
     public:
         bool insertOnRetry;
-        SyncTest2() : InitialSync(0), insertOnRetry(false) {}
+        SyncTest2(replset::ThreadPool& tp) : InitialSync(0, tp), insertOnRetry(false) {}
         virtual ~SyncTest2() {}
         virtual bool shouldRetry(const BSONObj& o) {
             if (!insertOnRetry) {
@@ -167,8 +167,8 @@ namespace ReplSetTests {
             b.append("o2", BSON("_id" << 123));
             b.append("ns", ns());
             BSONObj obj = b.obj();
-
-            SyncTest2 sync;
+            replset::ThreadPool tp(1);
+            SyncTest2 sync(tp);
             ASSERT_THROWS(sync.applyOp(obj), UserException);
 
             sync.insertOnRetry = true;
@@ -390,7 +390,8 @@ namespace ReplSetTests {
             _bgsync = new BackgroundSyncTest();
 
             // setup tail
-            _tailer = new replset::SyncTail(_bgsync);
+            replset::ThreadPool tp(1);
+            _tailer = new replset::SyncTail(_bgsync, tp);
 
             // setup theReplSet
             ReplSetTest *rst = new ReplSetTest();

@@ -65,6 +65,9 @@ namespace mongo {
                     try {
                         task();
                     }
+                    catch (DBException& e) {
+                        log() << "exception: " << e.toString() << endl;
+                    }
                     catch (std::exception e) {
                         log() << "Unhandled exception in worker thread: " << e.what() << endl;;
                     }
