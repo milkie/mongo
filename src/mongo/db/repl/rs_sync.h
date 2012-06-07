@@ -32,6 +32,7 @@ namespace replset {
      */
     class SyncTail : public Sync {
         BackgroundSyncInterface* _queue;
+        typedef void (*multiSyncApplyFunc)(OpPkg op);
     public:
         virtual ~SyncTail();
         SyncTail(BackgroundSyncInterface *q, ThreadPool& writerPool);
@@ -44,7 +45,7 @@ namespace replset {
         // stop waiting and apply the queue we have.  Only returns false if !ops.empty().
         bool tryPopAndWaitForMore(std::deque<const BSONObj*>& ops);
         void clearOps(std::deque<const BSONObj*>& ops);
-        bool multiApply(std::deque<const BSONObj*>& ops);
+        bool multiApply(std::deque<const BSONObj*>& ops, multiSyncApplyFunc f);
     private:
         replset::ThreadPool& _writerPool;
         void prefetchOps(std::deque<const BSONObj*>& ops);

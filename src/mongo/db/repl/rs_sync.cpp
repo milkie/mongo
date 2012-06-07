@@ -140,6 +140,20 @@ namespace mongo {
         const BSONObj *o = op.op;
         fassert(16359,st->syncApply(*o));
     }
+
+    void multiInitSyncApply( OpPkg op ) {
+        if (!ClientBasic::getCurrent()) {
+            Client::initThread("writer worker");
+        }
+        SyncTail* st = op.st;
+        const BSONObj *o = op.op;
+
+        if (!st->syncApply(*o)) {
+            if (st->shouldRetry(*o)) {
+                uassert(15915, "replSet update still fails after adding missing object", st->syncApply(*o));
+            }
+        }
+    }
     }
 
     void replset::SyncTail::prefetchOp(const BSONObj* op) {
@@ -148,7 +162,7 @@ namespace mongo {
         }
         const char *ns = op->getStringField("ns");
         if (ns && (ns[0] != 0)) {
-            Client::ReadContext ctx(ns); 
+            Client::ReadContext ctx(ns);
             prefetchPagesForReplicatedOp(*op);
         }
     }
@@ -163,16 +177,16 @@ namespace mongo {
         prefetcherPool.join();
     }
 
-    bool replset::SyncTail::multiApply( std::deque<const BSONObj*>& ops ) {
-        
+    bool replset::SyncTail::multiApply( std::deque<const BSONObj*>& ops, multiSyncApplyFunc f ) {
+
         //if (prefetch) {
         prefetchOps(ops);
-        
+
         //}
-        
-        
+
+
         fillWriterQueues( _writerPool, ops );
-        _writerPool.setTask( &mongo::replset::multiSyncApply );
+        _writerPool.setTask( f );
         // blocks until all poolthreads have finished
         _writerPool.go();
 
@@ -239,7 +253,7 @@ namespace mongo {
             }
 
             try {
-                multiApply(ops);
+                multiApply(ops, multiInitSyncApply);
 
                 n += ops.size();
 
@@ -372,7 +386,7 @@ namespace mongo {
             const BSONObj* lastOp = ops[ops.size()-1];
             handleSlaveDelay(*lastOp);
 
-            multiApply(ops);
+            multiApply(ops, multiSyncApply);
 
             clearOps(ops);
         }
