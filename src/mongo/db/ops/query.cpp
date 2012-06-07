@@ -339,25 +339,14 @@ namespace mongo {
         }
         return orderedMatch = true;
     }
-
-    ReorderBuildStrategy* ReorderBuildStrategy::make( const ParsedQuery& parsedQuery,
-                                                      const shared_ptr<Cursor>& cursor,
-                                                      BufBuilder& buf,
-                                                      const QueryPlanSummary& queryPlan ) {
-        auto_ptr<ReorderBuildStrategy> ret( new ReorderBuildStrategy( parsedQuery, cursor, buf ) );
-        ret->init( queryPlan );
-        return ret.release();
-    }
-
+    
     ReorderBuildStrategy::ReorderBuildStrategy( const ParsedQuery &parsedQuery,
                                                const shared_ptr<Cursor> &cursor,
-                                               BufBuilder &buf ) :
+                                               BufBuilder &buf,
+                                               const QueryPlanSummary &queryPlan ) :
     ResponseBuildStrategy( parsedQuery, cursor, buf ),
+    _scanAndOrder( newScanAndOrder( queryPlan ) ),
     _bufferedMatches() {
-    }
-    
-    void ReorderBuildStrategy::init( const QueryPlanSummary &queryPlan ) {
-        _scanAndOrder.reset( newScanAndOrder( queryPlan ) );
     }
 
     bool ReorderBuildStrategy::handleMatch( bool &orderedMatch ) {
@@ -400,28 +389,16 @@ namespace mongo {
                                 _parsedQuery.getOrder(),
                                 *fieldRangeSet );
     }
-
-    HybridBuildStrategy* HybridBuildStrategy::make( const ParsedQuery& parsedQuery,
-                                                    const shared_ptr<QueryOptimizerCursor>& cursor,
-                                                    BufBuilder& buf ) {
-        auto_ptr<HybridBuildStrategy> ret( new HybridBuildStrategy( parsedQuery, cursor, buf ) );
-        ret->init();
-        return ret.release();
-    }
-
+    
     HybridBuildStrategy::HybridBuildStrategy( const ParsedQuery &parsedQuery,
                                              const shared_ptr<QueryOptimizerCursor> &cursor,
                                              BufBuilder &buf ) :
     ResponseBuildStrategy( parsedQuery, cursor, buf ),
     _orderedBuild( _parsedQuery, _cursor, _buf ),
+    _reorderBuild( _parsedQuery, _cursor, _buf, QueryPlanSummary() ),
     _reorderedMatches() {
     }
-
-    void HybridBuildStrategy::init() {
-        _reorderBuild.reset( ReorderBuildStrategy::make( _parsedQuery, _cursor, _buf,
-                                                         QueryPlanSummary() ) );
-    }
-
+    
     bool HybridBuildStrategy::handleMatch( bool &orderedMatch ) {
         if ( !_queryOptimizerCursor->currentPlanScanAndOrderRequired() ) {
             return _orderedBuild.handleMatch( orderedMatch );
@@ -436,7 +413,7 @@ namespace mongo {
             return false;
         }
         try {
-            _reorderBuild->_handleMatchNoDedup();
+            _reorderBuild._handleMatchNoDedup();
         } catch ( const UserException &e ) {
             if ( e.getCode() == ScanAndOrderMemoryLimitExceededAssertionCode ) {
                 if ( _queryOptimizerCursor->hasPossiblyExcludedPlans() ) {
@@ -459,12 +436,12 @@ namespace mongo {
         }
         _reorderedMatches = true;
         resetBuf();
-        return _reorderBuild->rewriteMatches();
+        return _reorderBuild.rewriteMatches();
     }
 
     int HybridBuildStrategy::bufferedMatches() const {
         return _reorderedMatches ?
-                _reorderBuild->bufferedMatches() :
+                _reorderBuild.bufferedMatches() :
                 _orderedBuild.bufferedMatches();
     }
 
@@ -595,10 +572,10 @@ namespace mongo {
         if ( singlePlan ||
             !queryOptimizerPlans.mayRunInOrderPlan() ) {
             return shared_ptr<ResponseBuildStrategy>
-            ( ReorderBuildStrategy::make( _parsedQuery, _cursor, _buf, queryPlan ) );
+            ( new ReorderBuildStrategy( _parsedQuery, _cursor, _buf, queryPlan ) );
         }
         return shared_ptr<ResponseBuildStrategy>
-        ( HybridBuildStrategy::make( _parsedQuery, _queryOptimizerCursor, _buf ) );
+        ( new HybridBuildStrategy( _parsedQuery, _queryOptimizerCursor, _buf ) );
     }
 
     bool QueryResponseBuilder::currentMatches() {
