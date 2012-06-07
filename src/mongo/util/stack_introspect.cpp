@@ -53,6 +53,9 @@ namespace mongo {
             if ( name.find( "ShardChunkManager" ) != string::npos )
                 return false;
 
+            if ( name.find( "ShardChunkManager" ) != string::npos )
+                return false;
+
             return method == clazz;
         }
         
