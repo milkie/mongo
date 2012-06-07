@@ -22,6 +22,7 @@
 
 #include "mongo/db/client.h"
 #include "mongo/db/commands/fsync.h"
+#include "mongo/db/d_concurrency.h"
 #include "mongo/db/prefetch.h"
 #include "mongo/db/repl.h"
 #include "mongo/db/repl/bgsync.h"
@@ -135,6 +136,8 @@ namespace mongo {
     void multiSyncApply( OpPkg op ) {
         if (!ClientBasic::getCurrent()) {
             Client::initThread("writer worker");
+            // allow us to get through the magic barrier
+            Lock::ParallelBatchWriterMode::iAmABatchParticipant();
         }
         SyncTail* st = op.st;
         const BSONObj *o = op.op;
@@ -144,6 +147,8 @@ namespace mongo {
     void multiInitSyncApply( OpPkg op ) {
         if (!ClientBasic::getCurrent()) {
             Client::initThread("writer worker");
+            // allow us to get through the magic barrier
+            Lock::ParallelBatchWriterMode::iAmABatchParticipant();
         }
         SyncTail* st = op.st;
         const BSONObj *o = op.op;
@@ -187,9 +192,14 @@ namespace mongo {
 
         fillWriterQueues( _writerPool, ops );
         _writerPool.setTask( f );
-        // blocks until all poolthreads have finished
-        _writerPool.go();
 
+        {
+            // stop all readers until we're done
+            Lock::ParallelBatchWriterMode pbwm;
+
+            // this blocks until all poolthreads have finished
+            _writerPool.go();
+        }
         return true;
     }
 
