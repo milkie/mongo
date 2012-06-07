@@ -73,7 +73,11 @@ namespace mongo {
         };
 
         ThreadPool::~ThreadPool() {
-            // unimplemented.
+            for (std::vector<Worker*>::iterator it = _workers.begin();
+                 it != _workers.end();
+                 ++it) {
+                delete *it;
+            }        
         }
 
         void ThreadPool::go() {
@@ -100,7 +104,10 @@ namespace mongo {
             _thread(boost::bind(&Worker::loop, this))
         {}
     
-
+        Worker::~Worker() {
+            _thread.interrupt();
+            _thread.join();
+        }
         void Worker::enqueue(OpPkg op) {
             _queue.push_back(op);
         }

@@ -66,7 +66,7 @@ namespace replset {
     class Worker : boost::noncopyable {
     public:
         Worker(ThreadPool& pool);
-
+        ~Worker();
         void enqueue(OpPkg op);
         
     private:

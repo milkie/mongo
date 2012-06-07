@@ -36,13 +36,88 @@ namespace mongo {
 
 namespace ReplSetTests {
 
+    class ReplSetTest : public ReplSet {
+        ReplSetConfig *_config;
+        ReplSetConfig::MemberCfg *_myConfig;
+        replset::BackgroundSyncInterface *_syncTail;
+    public:
+        virtual ~ReplSetTest() {
+            delete _myConfig;
+            delete _config;
+        }
+        ReplSetTest() : _syncTail(0) {
+            BSONArrayBuilder members;
+            members.append(BSON("_id" << 0 << "host" << "host1"));
+            members.append(BSON("_id" << 1 << "host" << "host2"));
+            _config = new ReplSetConfig(BSON("_id" << "foo" << "members" << members.arr()));
+
+            _myConfig = new ReplSetConfig::MemberCfg();
+        }
+        virtual bool isSecondary() {
+            return true;
+        }
+        virtual bool isPrimary() {
+            return _syncTail->peek() == 0;
+        }
+        virtual bool tryToGoLiveAsASecondary(OpTime& minvalid) {
+            return false;
+        }
+        virtual const ReplSetConfig& config() {
+            return *_config;
+        }
+        virtual const ReplSetConfig::MemberCfg& myConfig() {
+            return *_myConfig;
+        }
+        virtual bool buildIndexes() const {
+            return true;
+        }
+        void setSyncTail(replset::BackgroundSyncInterface *syncTail) {
+            _syncTail = syncTail;
+        }
+    };
+
+    class BackgroundSyncTest : public replset::BackgroundSyncInterface {
+        std::queue<BSONObj> _queue;
+    public:
+        BackgroundSyncTest() {}
+        virtual ~BackgroundSyncTest() {}
+        virtual BSONObj* peek() {
+            if (_queue.empty()) {
+                return NULL;
+            }
+            return &_queue.front();
+        }
+        virtual void consume() {
+            _queue.pop();
+        }
+        virtual Member* getSyncTarget() {
+            return 0;
+        }
+        void addDoc(BSONObj doc) {
+            _queue.push(doc.getOwned());
+        }
+        virtual void blockingPeek() {
+            return;
+        }
+    };
+
+
     class Base {
+    private:
         static DBDirectClient client_;
+    protected:
+        BackgroundSyncTest *_bgsync;
+        replset::SyncTail *_tailer;
     public:
         Base() {
             cmdLine._replSet = "foo";
             cmdLine.oplogSize = 5;
             createOplog();
+            setup();
+        }
+        ~Base() {
+            delete _bgsync;
+            delete _tailer;
         }
 
         static const char *ns() {
@@ -72,7 +147,21 @@ namespace ReplSetTests {
 
             dropCollection( string(ns()), errmsg, result );
         }
+        void setup() {
+            // setup background sync instance
+            _bgsync = new BackgroundSyncTest();
+
+            // setup tail
+            replset::ThreadPool tp(1);
+            _tailer = new replset::SyncTail(_bgsync, tp);
+
+            // setup theReplSet
+            ReplSetTest *rst = new ReplSetTest();
+            rst->setSyncTail(_bgsync);
+            theReplSet = rst;
+        }
     };
+
     DBDirectClient Base::client_;
 
 
@@ -328,88 +417,7 @@ namespace ReplSetTests {
         }
     };
 
-    class BackgroundSyncTest : public replset::BackgroundSyncInterface {
-        std::queue<BSONObj> _queue;
-    public:
-        BackgroundSyncTest() {}
-        virtual ~BackgroundSyncTest() {}
-        virtual BSONObj* peek() {
-            if (_queue.empty()) {
-                return NULL;
-            }
-            return &_queue.front();
-        }
-        virtual void consume() {
-            _queue.pop();
-        }
-        virtual Member* getSyncTarget() {
-            return 0;
-        }
-        void addDoc(BSONObj doc) {
-            _queue.push(doc.getOwned());
-        }
-        virtual void blockingPeek() {
-            return;
-        }
-    };
-
-    class ReplSetTest : public ReplSet {
-        ReplSetConfig *_config;
-        ReplSetConfig::MemberCfg *_myConfig;
-        replset::BackgroundSyncInterface *_syncTail;
-    public:
-        virtual ~ReplSetTest() {
-            delete _myConfig;
-            delete _config;
-        }
-        ReplSetTest() : _syncTail(0) {
-            BSONArrayBuilder members;
-            members.append(BSON("_id" << 0 << "host" << "host1"));
-            members.append(BSON("_id" << 1 << "host" << "host2"));
-            _config = new ReplSetConfig(BSON("_id" << "foo" << "members" << members.arr()));
-
-            _myConfig = new ReplSetConfig::MemberCfg();
-        }
-        virtual bool isSecondary() {
-            return true;
-        }
-        virtual bool isPrimary() {
-            return _syncTail->peek() == 0;
-        }
-        virtual bool tryToGoLiveAsASecondary(OpTime& minvalid) {
-            return false;
-        }
-        virtual const ReplSetConfig& config() {
-            return *_config;
-        }
-        virtual const ReplSetConfig::MemberCfg& myConfig() {
-            return *_myConfig;
-        }
-        virtual bool buildIndexes() const {
-            return true;
-        }
-        void setSyncTail(replset::BackgroundSyncInterface *syncTail) {
-            _syncTail = syncTail;
-        }
-    };
-
     class TestRSSync : public Base {
-        BackgroundSyncTest *_bgsync;
-        replset::SyncTail *_tailer;
-
-        void setup() {
-            // setup background sync instance
-            _bgsync = new BackgroundSyncTest();
-
-            // setup tail
-            replset::ThreadPool tp(1);
-            _tailer = new replset::SyncTail(_bgsync, tp);
-
-            // setup theReplSet
-            ReplSetTest *rst = new ReplSetTest();
-            rst->setSyncTail(_bgsync);
-            theReplSet = rst;
-        }
 
         void addOp(const string& op, BSONObj o, BSONObj* o2 = 0, const char* coll = 0) {
             OpTime ts;
@@ -469,15 +477,8 @@ namespace ReplSetTests {
             _tailer->oplogApplication();
         }
     public:
-        ~TestRSSync() {
-            delete _bgsync;
-            delete _tailer;
-        }
-
         void run() {
             const int expected = 100;
-
-            setup();
 
             drop();
             addInserts(100);
