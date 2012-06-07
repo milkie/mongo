@@ -27,6 +27,9 @@ namespace replset {
 
     class BackgroundSyncInterface;
 
+    void multiSyncApply( OpPkg op );
+    void multiInitSyncApply( OpPkg op );
+
     /**
      * "Normal" replica set syncing
      */

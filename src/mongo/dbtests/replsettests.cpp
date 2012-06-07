@@ -122,19 +122,24 @@ namespace ReplSetTests {
             MockInitialSync mock(tp);
 
             // all three should succeed
-            mock.applyOp(obj);
+            std::deque<const BSONObj*> ops;
+            ops.push_back(&obj);
+            mock.multiApply(ops, replset::multiInitSyncApply);
 
             mock.failOnStep = MockInitialSync::FAIL_FIRST_APPLY;
-            mock.applyOp(obj);
+            mock.multiApply(ops, replset::multiInitSyncApply);
 
             mock.retry = false;
-            mock.applyOp(obj);
+            mock.multiApply(ops, replset::multiInitSyncApply);
 
             // force failure
             MockInitialSync mock2(tp);
             mock2.failOnStep = MockInitialSync::FAIL_BOTH_APPLY;
 
-            ASSERT_THROWS(mock2.applyOp(obj), UserException);
+            replset::OpPkg oppkg;
+            oppkg.st = &mock2;
+            oppkg.op = &obj;
+            ASSERT_THROWS(replset::multiInitSyncApply(oppkg), UserException);
         }
     };
 
@@ -169,11 +174,15 @@ namespace ReplSetTests {
             BSONObj obj = b.obj();
             replset::ThreadPool tp(1);
             SyncTest2 sync(tp);
-            ASSERT_THROWS(sync.applyOp(obj), UserException);
+
+            replset::OpPkg oppkg;
+            oppkg.st = &sync;
+            oppkg.op = &obj;
+            ASSERT_THROWS(multiInitSyncApply(oppkg), UserException);
 
             sync.insertOnRetry = true;
             // succeeds
-            sync.applyOp(obj);
+            multiInitSyncApply(oppkg);
 
             BSONObj fin = findOne();
             verify(fin["x"].Number() == 456);
@@ -338,6 +347,9 @@ namespace ReplSetTests {
         }
         void addDoc(BSONObj doc) {
             _queue.push(doc.getOwned());
+        }
+        virtual void blockingPeek() {
+            return;
         }
     };
 
