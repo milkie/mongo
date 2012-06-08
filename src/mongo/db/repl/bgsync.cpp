@@ -345,8 +345,9 @@ namespace replset {
     }
 
     void BackgroundSync::consume() {
-        // this is just to get the op off the queue, it's been peeked at and applied already
-        _buffer.blockingPop();
+        // this is just to get the op off the queue, it's been peeked at 
+        // and queued for application already
+        delete _buffer.blockingPop();
     }
 
     bool BackgroundSync::isStale(OplogReader& r, BSONObj& remoteOldestOp) {

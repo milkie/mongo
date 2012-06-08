@@ -35,12 +35,15 @@ namespace mongo {
 }
 
 namespace ReplSetTests {
-
+    const int replWriterThreadCount(32);
+    const int replPrefetcherThreadCount(32);
     class ReplSetTest : public ReplSet {
         ReplSetConfig *_config;
         ReplSetConfig::MemberCfg *_myConfig;
         replset::BackgroundSyncInterface *_syncTail;
     public:
+        static const int replWriterThreadCount;
+        static const int replPrefetcherThreadCount;
         virtual ~ReplSetTest() {
             delete _myConfig;
             delete _config;
@@ -48,16 +51,14 @@ namespace ReplSetTests {
         ReplSetTest() : _syncTail(0) {
             BSONArrayBuilder members;
             members.append(BSON("_id" << 0 << "host" << "host1"));
-            members.append(BSON("_id" << 1 << "host" << "host2"));
             _config = new ReplSetConfig(BSON("_id" << "foo" << "members" << members.arr()));
-
             _myConfig = new ReplSetConfig::MemberCfg();
         }
         virtual bool isSecondary() {
             return true;
         }
         virtual bool isPrimary() {
-            return _syncTail->peek() == 0;
+            return false;
         }
         virtual bool tryToGoLiveAsASecondary(OpTime& minvalid) {
             return false;
@@ -106,8 +107,9 @@ namespace ReplSetTests {
     private:
         static DBDirectClient client_;
     protected:
-        BackgroundSyncTest *_bgsync;
-        replset::SyncTail *_tailer;
+        BackgroundSyncTest* _bgsync;
+        replset::ThreadPool* _threadpool;
+        replset::SyncTail* _tailer;
     public:
         Base() {
             cmdLine._replSet = "foo";
@@ -117,6 +119,7 @@ namespace ReplSetTests {
         }
         ~Base() {
             delete _bgsync;
+            delete _threadpool;
             delete _tailer;
         }
 
@@ -152,12 +155,13 @@ namespace ReplSetTests {
             _bgsync = new BackgroundSyncTest();
 
             // setup tail
-            replset::ThreadPool tp(1);
-            _tailer = new replset::SyncTail(_bgsync, tp);
+            _threadpool = new replset::ThreadPool(theReplSet->replWriterThreadCount);
+            _tailer = new replset::SyncTail(_bgsync, *_threadpool);
 
             // setup theReplSet
             ReplSetTest *rst = new ReplSetTest();
             rst->setSyncTail(_bgsync);
+            delete theReplSet;
             theReplSet = rst;
         }
     };
@@ -207,7 +211,7 @@ namespace ReplSetTests {
             b.append("ns","dummy");
             b.appendTimestamp("ts", o.asLL());
             BSONObj obj = b.obj();
-            replset::ThreadPool tp(1);
+            replset::ThreadPool tp(theReplSet->replWriterThreadCount);
             MockInitialSync mock(tp);
 
             // all three should succeed
@@ -227,6 +231,7 @@ namespace ReplSetTests {
             // force failure
             MockInitialSync mock2(tp);
             mock2.failOnStep = MockInitialSync::FAIL_BOTH_APPLY;
+            oppkg.st = &mock2;
 
             ASSERT_THROWS(replset::multiInitSyncApply(oppkg), UserException);
         }
@@ -259,7 +264,7 @@ namespace ReplSetTests {
             b.append("o2", BSON("_id" << 123));
             b.append("ns", ns());
             BSONObj obj = b.obj();
-            replset::ThreadPool tp(1);
+            replset::ThreadPool tp(theReplSet->replWriterThreadCount);
             SyncTest2 sync(tp);
 
             replset::OpPkg oppkg;
@@ -510,12 +515,12 @@ namespace ReplSetTests {
         }
 
         void setupTests() {
+            add< TestRSSync >();
             add< TestInitApplyOp >();
             add< TestInitApplyOp2 >();
             add< CappedInitialSync >();
             add< CappedUpdate >();
             add< CappedInsert >();
-            add< TestRSSync >();
         }
     } myall;
 }

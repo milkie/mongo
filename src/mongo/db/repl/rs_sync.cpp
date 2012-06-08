@@ -140,7 +140,7 @@ namespace mongo {
             Lock::ParallelBatchWriterMode::iAmABatchParticipant();
         }
         SyncTail* st = op.st;
-        const BSONObj *o = op.op;
+        const BSONObj* o = op.op;
         fassert(16359,st->syncApply(*o));
     }
 
@@ -151,7 +151,7 @@ namespace mongo {
             Lock::ParallelBatchWriterMode::iAmABatchParticipant();
         }
         SyncTail* st = op.st;
-        const BSONObj *o = op.op;
+        const BSONObj* o = op.op;
 
         if (!st->syncApply(*o)) {
             if (st->shouldRetry(*o)) {
@@ -161,20 +161,20 @@ namespace mongo {
     }
     }
 
-    void replset::SyncTail::prefetchOp(const BSONObj* op) {
+    void replset::SyncTail::prefetchOp(const BSONObj& op) {
         if (!ClientBasic::getCurrent()) {
             Client::initThread("prefetch worker");
         }
-        const char *ns = op->getStringField("ns");
+        const char *ns = op.getStringField("ns");
         if (ns && (ns[0] != 0)) {
             Client::ReadContext ctx(ns);
-            prefetchPagesForReplicatedOp(*op);
+            prefetchPagesForReplicatedOp(op);
         }
     }
 
-    void replset::SyncTail::prefetchOps(std::deque<const BSONObj*>& ops) {
+    void replset::SyncTail::prefetchOps(std::deque<BSONObj>& ops) {
         threadpool::ThreadPool& prefetcherPool = theReplSet->getPrefetchPool();
-        for (std::deque<const BSONObj*>::const_iterator it = ops.begin();
+        for (std::deque<BSONObj>::iterator it = ops.begin();
              it != ops.end();
              ++it) {
             prefetcherPool.schedule(&prefetchOp, *it);
@@ -182,7 +182,7 @@ namespace mongo {
         prefetcherPool.join();
     }
 
-    void replset::SyncTail::multiApply( std::deque<const BSONObj*>& ops, multiSyncApplyFunc f ) {
+    void replset::SyncTail::multiApply( std::deque<BSONObj>& ops, multiSyncApplyFunc f ) {
 
         // Use a ThreadPool to prefetch all the operations in a batch.
         prefetchOps(ops);
@@ -204,20 +204,20 @@ namespace mongo {
        hashes on namespace name to ensure that ops on a given ns
        are applied in order.
     */
-    void replset::SyncTail::fillWriterQueues(replset::ThreadPool& pool, std::deque<const BSONObj*>& ops) {
-        for (std::deque<const BSONObj*>::const_iterator it = ops.begin();
+    void replset::SyncTail::fillWriterQueues(replset::ThreadPool& pool, std::deque<BSONObj>& ops) {
+        for (std::deque<BSONObj>::const_iterator it = ops.begin();
              it != ops.end();
              ++it) {
-            const BSONElement e = (*it)->getField("ns");
+            const BSONElement e = it->getField("ns");
             verify(e.type() == String);
             const char* ns = e.valuestr();
             int len = e.valuestrsize();
-            uint32_t hash;
+            uint32_t hash = 0;
             MurmurHash3_x86_32( ns, len, 0, &hash);
 
             OpPkg oppkg;
             oppkg.st = this;
-            oppkg.op = *it;
+            oppkg.op = &(*it); // the queue maintains the storage for the BSON objects
             pool.enqueue(hash % theReplSet->replWriterThreadCount, oppkg);
         }
     }
@@ -251,7 +251,7 @@ namespace mongo {
         time_t start = time(0);
         unsigned long long n = 0, lastN = 0;
         while( ts < minValid ) {
-            deque<const BSONObj*> ops;
+            deque<BSONObj> ops;
 
             while (ops.size() < 128) {
                 if (!tryPopAndWaitForMore(ops)) {
@@ -276,8 +276,8 @@ namespace mongo {
                 }
 
                 // we want to keep a record of the last op applied, to compare with minvalid
-                const BSONObj* lastOp = ops[ops.size()-1];
-                OpTime tempTs = (*lastOp)["ts"]._opTime();
+                const BSONObj& lastOp = ops[ops.size()-1];
+                OpTime tempTs = lastOp["ts"]._opTime();
                 clearOps(ops);
 
                 ts = tempTs;
@@ -355,10 +355,14 @@ namespace mongo {
     /* tail an oplog.  ok to return, will be re-called. */
     void replset::SyncTail::oplogApplication() {
         while( 1 ) {
-            deque<const BSONObj*> ops;
+            deque<BSONObj> ops;
             time_t lastTimeChecked = time(0);
 
             verify( !Lock::isLocked() );
+
+            // always fetch a few ops first
+            tryPopAndWaitForMore(ops);
+
             while (ops.size() < 128) {
                 // occasionally check some things
                 if (ops.empty() || time(0) - lastTimeChecked >= 1) {
@@ -379,7 +383,9 @@ namespace mongo {
                     // singleton member has done a stepDown() and needs to come back up.
                     if (theReplSet->config().members.size() == 1 &&
                         theReplSet->myConfig().potentiallyHot()) {
-                        theReplSet->mgr->send(boost::bind(&Manager::msgCheckNewState, theReplSet->mgr));
+                        Manager* mgr = theReplSet->mgr;
+                        // When would mgr be null?  During replsettest'ing.
+                        if (mgr) mgr->send(boost::bind(&Manager::msgCheckNewState, theReplSet->mgr));
                         sleepsecs(1);
                         return;
                     }
@@ -390,8 +396,8 @@ namespace mongo {
                 }
             }
 
-            const BSONObj* lastOp = ops[ops.size()-1];
-            handleSlaveDelay(*lastOp);
+            const BSONObj& lastOp = ops[ops.size()-1];
+            handleSlaveDelay(lastOp);
 
             multiApply(ops, multiSyncApply);
 
@@ -399,8 +405,8 @@ namespace mongo {
         }
     }
 
-    bool replset::SyncTail::tryPopAndWaitForMore(deque<const BSONObj*>& ops) {
-        BSONObj* op = peek();
+    bool replset::SyncTail::tryPopAndWaitForMore(deque<BSONObj>& ops) {
+        const BSONObj* op = peek();
 
         if (op == NULL) {
             // if we don't have anything in the queue, keep waiting on queue
@@ -418,30 +424,28 @@ namespace mongo {
         if ((*op)["op"].valuestrsafe()[0] == 'c') {
             if (ops.empty()) {
                 // apply commands one-at-a-time
-                ops.push_back(op);
+                ops.push_back(*op);
                 consume();
             }
 
             // otherwise, apply what we have so far and come back for the command
             return false;
         }
-
-        ops.push_back(op);
+        ops.push_back(*op);
         consume();
 
         return true;
     }
 
-    void replset::SyncTail::clearOps(deque<const BSONObj*>& ops) {
+    void replset::SyncTail::clearOps(deque<BSONObj>& ops) {
         {
             Lock::DBWrite lk("local");
             while (!ops.empty()) {
-                const BSONObj* op = ops.front();
+                const BSONObj& op = ops.front();
                 // this updates theReplSet->lastOpTimeWritten
-                _logOpObjRS(*op);
+                _logOpObjRS(op);
                 ops.pop_front();
-                delete op;
-            }
+             }
         }
 
         // let w catch up
