@@ -182,14 +182,12 @@ namespace mongo {
         prefetcherPool.join();
     }
 
-    bool replset::SyncTail::multiApply( std::deque<const BSONObj*>& ops, multiSyncApplyFunc f ) {
+    void replset::SyncTail::multiApply( std::deque<const BSONObj*>& ops, multiSyncApplyFunc f ) {
 
-        //if (prefetch) {
+        // Use a ThreadPool to prefetch all the operations in a batch.
         prefetchOps(ops);
 
-        //}
-
-
+        // Prepare a replset::ThreadPool for writing ops in parallel.
         fillWriterQueues( _writerPool, ops );
         _writerPool.setTask( f );
 
@@ -197,10 +195,9 @@ namespace mongo {
             // stop all readers until we're done
             Lock::ParallelBatchWriterMode pbwm;
 
-            // this blocks until all poolthreads have finished
+            // this blocks until all writer threads have finished
             _writerPool.go();
         }
-        return true;
     }
 
     /* fills the writer thread's queues with operations.
