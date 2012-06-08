@@ -25,6 +25,44 @@
 namespace mongo {
     namespace replset {
 
+        ThreadPool::ThreadPool(int nThreads) : 
+            _nThreads(nThreads),
+            _batchMx("RS ThreadPool"),
+            _finishedCount(0),
+            _running(false) 
+        {
+            _workers.reserve(_nThreads);
+            for (int i = 0; i < _nThreads; ++i) {
+                Worker* worker = new Worker(*this);
+                _workers.push_back(worker);
+            }        
+        };
+
+        ThreadPool::~ThreadPool() {
+            for (std::vector<Worker*>::iterator it = _workers.begin();
+                 it != _workers.end();
+                 ++it) {
+                delete *it;
+            }        
+        }
+
+        void ThreadPool::go() {
+            SimpleMutex::scoped_lock lck(_batchMx);
+            _running = true;
+            _batchCV.notify_all();
+            while (_finishedCount < _nThreads) {
+                _finishCV.wait(_batchMx);
+            }
+            _running = false;
+            // move threads from waitForEnd 
+            // to waitForWork
+            _batchCV.notify_all();
+            while (_finishedCount > 0) {
+                _finishCV.wait(_batchMx);
+            }
+
+        }
+
         void ThreadPool::waitForEnd() {
             SimpleMutex::scoped_lock lck(_batchMx);
             while (_running) {
@@ -55,49 +93,13 @@ namespace mongo {
         void ThreadPool::setTask(Task func) {
             SimpleMutex::scoped_lock lck(_batchMx);
             verify(!_running);
-            _task = func;
+            task = func;
         }
 
-        ThreadPool::ThreadPool(int nThreads) : 
-            _nThreads(nThreads),
-            _batchMx("RS ThreadPool"),
-            _finishedCount(0),
-            _running(false)
-        {
-            _workers.reserve(_nThreads);
-            for (int i = 0; i < _nThreads; ++i) {
-                Worker* worker = new Worker(*this);
-                _workers.push_back(worker);
-            }        
-       
-        };
-
-        ThreadPool::~ThreadPool() {
-            for (std::vector<Worker*>::iterator it = _workers.begin();
-                 it != _workers.end();
-                 ++it) {
-                delete *it;
-            }        
+        void ThreadPool::enqueue(int workerNumber, OpPkg& op) {
+            verify(workerNumber < _nThreads);
+            _workers[ workerNumber ]->enqueue(op);
         }
-
-        void ThreadPool::go() {
-            SimpleMutex::scoped_lock lck(_batchMx);
-            _running = true;
-            _batchCV.notify_all();
-            while (_finishedCount < _nThreads) {
-                _finishCV.wait(_batchMx);
-            }
-            _running = false;
-            // move threads from waitForEnd 
-            // to waitForWork
-            _batchCV.notify_all();
-            while (_finishedCount > 0) {
-                _finishCV.wait(_batchMx);
-            }
-
-        }
-
-   
 
         Worker::Worker(ThreadPool& pool) : 
             _pool(pool),
@@ -117,7 +119,7 @@ namespace mongo {
                 _pool.waitForWork();
                 while (!_queue.empty()) {
                     OpPkg& op = _queue.front();
-                    _pool._task(op);
+                    _pool.task(op);
                     _queue.pop_front();
                 }
                 _pool.incrementFinished();

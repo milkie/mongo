@@ -221,7 +221,7 @@ namespace mongo {
             OpPkg oppkg;
             oppkg.st = this;
             oppkg.op = *it;
-            pool._workers[ hash % theReplSet->replWriterThreadCount ]->enqueue(oppkg);
+            pool.enqueue(hash % theReplSet->replWriterThreadCount, oppkg);
         }
     }
 
