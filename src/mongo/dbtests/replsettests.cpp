@@ -195,7 +195,6 @@ namespace ReplSetTests {
     class TestInitApplyOp : public Base {
     public:
         void run() {
-            Lock::GlobalWrite lk;
 
             OpTime o;
 
@@ -205,29 +204,30 @@ namespace ReplSetTests {
             }
 
             BSONObjBuilder b;
+            b.append("ns","dummy");
             b.appendTimestamp("ts", o.asLL());
             BSONObj obj = b.obj();
             replset::ThreadPool tp(1);
             MockInitialSync mock(tp);
 
             // all three should succeed
-            std::deque<const BSONObj*> ops;
-            ops.push_back(&obj);
-            mock.multiApply(ops, replset::multiInitSyncApply);
+
+            replset::OpPkg oppkg;
+            oppkg.st = &mock;
+            oppkg.op = &obj;
+
+            replset::multiInitSyncApply(oppkg);
 
             mock.failOnStep = MockInitialSync::FAIL_FIRST_APPLY;
-            mock.multiApply(ops, replset::multiInitSyncApply);
+            replset::multiInitSyncApply(oppkg);
 
             mock.retry = false;
-            mock.multiApply(ops, replset::multiInitSyncApply);
+            replset::multiInitSyncApply(oppkg);
 
             // force failure
             MockInitialSync mock2(tp);
             mock2.failOnStep = MockInitialSync::FAIL_BOTH_APPLY;
 
-            replset::OpPkg oppkg;
-            oppkg.st = &mock2;
-            oppkg.op = &obj;
             ASSERT_THROWS(replset::multiInitSyncApply(oppkg), UserException);
         }
     };
@@ -250,8 +250,6 @@ namespace ReplSetTests {
     class TestInitApplyOp2 : public Base {
     public:
         void run() {
-            Lock::GlobalWrite lk;
-
             OpTime o = OpTime::_now();
 
             BSONObjBuilder b;

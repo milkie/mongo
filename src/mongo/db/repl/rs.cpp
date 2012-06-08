@@ -399,8 +399,8 @@ namespace mongo {
         _maintenanceMode(0),
         mgr(0),
         ghost(0),
-        _writerPool(0),
-        _prefetcherPool(0) {
+        _writerPool(2),
+        _prefetcherPool(2) {
     }
 
     ReplSet::ReplSet(ReplSetCmdline& replSetCmdline) : ReplSetImpl(replSetCmdline) {}
