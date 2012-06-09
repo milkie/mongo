@@ -141,7 +141,11 @@ namespace mongo {
         }
         SyncTail* st = op.st;
         const BSONObj* o = op.op;
-        fassert(16359,st->syncApply(*o));
+        try {
+            fassert(16359,st->syncApply(*o));
+        } catch (DBException& e) {
+            fassertFailed(16360);
+        }
     }
 
     void multiInitSyncApply( OpPkg op ) {
@@ -152,11 +156,30 @@ namespace mongo {
         }
         SyncTail* st = op.st;
         const BSONObj* o = op.op;
-
-        if (!st->syncApply(*o)) {
-            if (st->shouldRetry(*o)) {
-                uassert(15915, "replSet update still fails after adding missing object", st->syncApply(*o));
+        try {
+            if (!st->syncApply(*o)) {
+                if (st->shouldRetry(*o)) {
+                    uassert(15915, "replSet update still fails after adding missing object", st->syncApply(*o));
+                }
             }
+        }
+        catch (DBException& e) {
+            // Skip duplicate key exceptions.
+            // These are relatively common on initial sync: if a document is inserted
+            // early in the clone step, the insert will be replayed but the document
+            // will probably already have been cloned over.
+            if( e.getCode() == 11000 || e.getCode() == 11001 || e.getCode() == 12582) {
+                return; // ignore
+            }
+/*
+            if( ts <= minValid ) {
+                // didn't make it far enough
+                log() << "replSet initial sync failing, error applying oplog : " << e.toString() << rsLog;
+                return false;
+            }
+*/
+            // otherwise, whatever, we'll catch
+            // anything that's really wrong in syncTail
         }
     }
     }
@@ -259,7 +282,7 @@ namespace mongo {
                 }
             }
 
-            try {
+            
                 multiApply(ops, multiInitSyncApply);
 
                 n += ops.size();
@@ -281,25 +304,7 @@ namespace mongo {
                 clearOps(ops);
 
                 ts = tempTs;
-            }
-            catch (DBException& e) {
-                // Skip duplicate key exceptions.
-                // These are relatively common on initial sync: if a document is inserted
-                // early in the clone step, the insert will be replayed but the document
-                // will probably already have been cloned over.
-                if( e.getCode() == 11000 || e.getCode() == 11001 || e.getCode() == 12582) {
-                    continue;
-                }
-
-                if( ts <= minValid ) {
-                    // didn't make it far enough
-                    log() << "replSet initial sync failing, error applying oplog : " << e.toString() << rsLog;
-                    return false;
-                }
-
-                // otherwise, whatever, we'll break out of the loop and catch
-                // anything that's really wrong in syncTail
-            }
+            
         }
         return true;
     }
