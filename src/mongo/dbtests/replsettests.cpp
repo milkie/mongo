@@ -82,11 +82,12 @@ namespace ReplSetTests {
     public:
         BackgroundSyncTest() {}
         virtual ~BackgroundSyncTest() {}
-        virtual BSONObj* peek() {
+        virtual bool peek(BSONObj* op) {
             if (_queue.empty()) {
-                return NULL;
+                return false;
             }
-            return &_queue.front();
+            op = &_queue.front();
+            return true;
         }
         virtual void consume() {
             _queue.pop();

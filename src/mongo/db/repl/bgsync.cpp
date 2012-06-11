@@ -28,8 +28,8 @@ namespace replset {
 
     BackgroundSyncInterface::~BackgroundSyncInterface() {}
 
-    size_t getSize(BSONObj* const& o) {
-        return o->objsize();
+    size_t getSize(BSONObj const& o) {
+        return o.objsize();
     }
 
     BackgroundSync::BackgroundSync() : _buffer(256*1024*1024, &getSize),
@@ -293,14 +293,14 @@ namespace replset {
                 if (!r.more())
                     break;
 
-                BSONObj* o = new BSONObj(r.nextSafe().getOwned());
+                BSONObj o = r.nextSafe().getOwned();
                 // the blocking queue will wait (forever) until there's room for us to push
                 _buffer.push(o);
 
                 {
                     boost::unique_lock<boost::mutex> lock(_mutex);
-                    _lastH = (*o)["h"].numberLong();
-                    _lastOpTimeFetched = (*o)["ts"]._opTime();
+                    _lastH = o["h"].numberLong();
+                    _lastOpTimeFetched = o["ts"]._opTime();
                 }
             } // end while
 
@@ -321,7 +321,7 @@ namespace replset {
         }
     }
 
-    BSONObj* BackgroundSync::peek() {
+    bool BackgroundSync::peek(BSONObj* op) {
         {
             boost::unique_lock<boost::mutex> lock(_mutex);
 
@@ -331,23 +331,18 @@ namespace replset {
             }
         }
 
-        BSONObj* opPtr = NULL;
-        if (!_buffer.peek(opPtr)) {
-            return NULL;
-        }
-
-        return opPtr;
+        return _buffer.peek(*op);
     }
 
     void BackgroundSync::blockingPeek() {
-        BSONObj* opPtr = NULL;
-        _buffer.blockingPeek(opPtr, 1);
+        BSONObj op;
+        _buffer.blockingPeek(op, 1);
     }
 
     void BackgroundSync::consume() {
         // this is just to get the op off the queue, it's been peeked at 
         // and queued for application already
-        delete _buffer.blockingPop();
+        _buffer.blockingPop();
     }
 
     bool BackgroundSync::isStale(OplogReader& r, BSONObj& remoteOldestOp) {

@@ -41,7 +41,7 @@ namespace replset {
         SyncTail(BackgroundSyncInterface *q, ThreadPool& writerPool);
         virtual bool syncApply(const BSONObj &o);
         void oplogApplication();
-        BSONObj* peek();
+        bool peek(BSONObj* op);
         void consume();
 
         // returns true if we should continue waiting for BSONObjs, false if we should

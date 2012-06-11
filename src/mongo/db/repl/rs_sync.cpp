@@ -41,8 +41,8 @@ namespace mongo {
 
     replset::SyncTail::~SyncTail() {}
 
-    BSONObj* replset::SyncTail::peek() {
-        return _queue->peek();
+    bool replset::SyncTail::peek(BSONObj* op) {
+        return _queue->peek(op);
     }
 
     void replset::SyncTail::consume() {
@@ -89,7 +89,7 @@ namespace mongo {
         const char *ns = o.getStringField("ns");
 
         if( ns ) {
-            if ( strlen(ns) == 0 || *ns == '.' ) {
+            if ( (*ns == '\0') || (*ns == '.') ) {
                 // this is ugly
                 // this is often a no-op
                 // but can't be 100% sure
@@ -114,7 +114,7 @@ namespace mongo {
                 // before our new operator invocation.
                 lk.reset();
                 verify( !Lock::isLocked() );
-                lk.reset(0);
+                lk.reset(ns);
             }
         }
 
@@ -421,9 +421,10 @@ namespace mongo {
     }
 
     bool replset::SyncTail::tryPopAndWaitForMore(deque<BSONObj>& ops) {
-        const BSONObj* op = peek();
+        BSONObj* op = NULL;
+        bool peek_success = peek(op);
 
-        if (op == NULL) {
+        if (!peek_success) {
             // if we don't have anything in the queue, keep waiting on queue
             if (ops.empty()) {
                 // block a bit
