@@ -54,78 +54,46 @@ namespace mongo {
 
     replset::InitialSync::~InitialSync() {}
 
-    void NOINLINE_DECL blank(const BSONObj& o) {
-        if( *o.getStringField("op") != 'n' ) {
-            log() << "replSet skipping bad op in oplog: " << o.toString() << rsLog;
-        }
-    }
-
-    class DontLockOnEverySingleOperation : boost::noncopyable {
-        scoped_ptr<Lock::ScopedLock> lk;
-        scoped_ptr<SimpleMutex::scoped_lock> fsync;
-    public:
-        void reset() {
-            lk.reset();
-            fsync.reset();
-        }
-        void reset(const char *ns) {
-            reset();
-            verify( !Lock::isLocked() );
-            fsync.reset( new SimpleMutex::scoped_lock(filesLockedFsync) );
-            if( ns == 0 ) {
-                lk.reset( new Lock::GlobalWrite() );
-            }
-            else {
-                lk.reset( new Lock::DBWrite(ns) );
-            }
-        }
-    };
-
     /* apply the log op that is in param o
        @return bool success (true) or failure (false)
     */
     bool replset::SyncTail::syncApply(const BSONObj &o) {
-        DontLockOnEverySingleOperation lk;
         const char *ns = o.getStringField("ns");
+        verify(ns);
 
-        if( ns ) {
-            if ( (*ns == '\0') || (*ns == '.') ) {
-                // this is ugly
-                // this is often a no-op
-                // but can't be 100% sure
-                lk.reset();
-                verify( !Lock::isLocked() );
-                lk.reset(0);
+        // Prevent pending write locks from blocking read locks
+        // while fsync is active
+        SimpleMutex::scoped_lock fsynclk(filesLockedFsync);
 
-                blank(o);
-                return true;
+        scoped_ptr<Lock::ScopedLock> lk;
+
+        if ( (*ns == '\0') || (*ns == '.') ) {
+            // this is ugly
+            // this is often a no-op
+            // but can't be 100% sure
+            if( *o.getStringField("op") != 'n' ) {
+                log() << "replSet skipping bad op in oplog: " << o.toString() << rsLog;
             }
-            else if( str::contains(ns, ".$cmd") ) {
-                // a command may need a global write lock. so we will conservatively go 
-                // ahead and grab one here. suboptimal. :-(
-                lk.reset();
-                verify( !Lock::isLocked() );
-                lk.reset(0);
-            }
-            else if( !Lock::isWriteLocked(ns) || Lock::isW() ) {
-                // we don't relock on every single op to try to be faster. however if switching 
-                // collections, we have to.
-                // note here we must reset to 0 first to assure the old object is destructed 
-                // before our new operator invocation.
-                lk.reset();
-                verify( !Lock::isLocked() );
-                lk.reset(ns);
-            }
+            return true;
         }
 
-        /* if we have become primary, we dont' want to apply things from elsewhere
+        if( str::contains(ns, ".$cmd") ) {
+            // a command may need a global write lock. so we will conservatively go 
+            // ahead and grab one here. suboptimal. :-(
+            lk.reset(new Lock::GlobalWrite());
+        } else {
+            // DB level lock for this operation
+            lk.reset( new Lock::DBWrite(ns) );
+        }
+        
+
+        /* if we have become primary, we don't want to apply things from elsewhere
            anymore. assumePrimary is in the db lock so we are safe as long as
            we check after we locked above. */
         if( theReplSet->isPrimary() ) {
             log(0) << "replSet stopping syncTail we are now primary" << rsLog;
             return false;
         }
-
 
         Client::Context ctx(ns, dbpath, false);
         ctx.getClient()->curop()->reset();
