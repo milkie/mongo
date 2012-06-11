@@ -148,7 +148,7 @@ namespace mongo {
         try {
             fassert(16359,st->syncApply(*o));
         } catch (DBException& e) {
-            error() << "writer worker caught exception: " << e.what() << endl;
+            error() << "writer worker caught exception: " << e.what() << " on: " << o->toString() << endl;
             fassertFailed(16360);
         }
     }
@@ -178,7 +178,8 @@ namespace mongo {
             if( e.getCode() == 11000 || e.getCode() == 11001 || e.getCode() == 12582) {
                 return; // ignore
             }
-            throw;
+            error() << "writer worker caught exception: " << e.what() << " on: " << o->toString() << endl;
+            fassertFailed(16361);
         }
     }
     } // namespace replset
@@ -406,6 +407,13 @@ namespace mongo {
             const BSONObj& lastOp = ops[ops.size()-1];
             handleSlaveDelay(lastOp);
 
+            // Set minValid to the last op to be applied in this next batch.
+            // This will cause this node to go into RECOVERING state
+            // if we should crash and restart before updating the oplog
+            { 
+                Client::WriteContext cx( "local." );   
+                Helpers::putSingleton("local.replset.minvalid", lastOp);
+            }
             multiApply(ops, multiSyncApply);
 
             clearOps(ops);
