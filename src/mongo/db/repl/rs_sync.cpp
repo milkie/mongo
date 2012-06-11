@@ -165,7 +165,7 @@ namespace mongo {
         try {
             if (!st->syncApply(*o)) {
                 if (st->shouldRetry(*o)) {
-                    uassert(15915, "replSet update still fails after adding missing object", 
+                    massert(15915, "replSet update still fails after adding missing object", 
                             st->syncApply(*o));
                 }
             }
