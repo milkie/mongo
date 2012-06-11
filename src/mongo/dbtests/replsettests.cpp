@@ -515,12 +515,12 @@ namespace ReplSetTests {
         }
 
         void setupTests() {
-            add< TestRSSync >();
             add< TestInitApplyOp >();
             add< TestInitApplyOp2 >();
             add< CappedInitialSync >();
             add< CappedUpdate >();
             add< CappedInsert >();
+            add< TestRSSync >();
         }
     } myall;
 }
