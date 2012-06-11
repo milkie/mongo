@@ -101,14 +101,17 @@ namespace mongo {
                 return true;
             }
             else if( str::contains(ns, ".$cmd") ) {
-                // a command may need a global write lock. so we will conservatively go ahead and grab one here. suboptimal. :-(
+                // a command may need a global write lock. so we will conservatively go 
+                // ahead and grab one here. suboptimal. :-(
                 lk.reset();
                 verify( !Lock::isLocked() );
                 lk.reset(0);
             }
             else if( !Lock::isWriteLocked(ns) || Lock::isW() ) {
-                // we don't relock on every single op to try to be faster. however if switching collections, we have to.
-                // note here we must reset to 0 first to assure the old object is destructed before our new operator invocation.
+                // we don't relock on every single op to try to be faster. however if switching 
+                // collections, we have to.
+                // note here we must reset to 0 first to assure the old object is destructed 
+                // before our new operator invocation.
                 lk.reset();
                 verify( !Lock::isLocked() );
                 lk.reset(0);
@@ -133,6 +136,7 @@ namespace mongo {
     }
 
     namespace replset {
+    // This free function is used by the writer threads to apply each op
     void multiSyncApply( OpPkg op ) {
         if (!ClientBasic::getCurrent()) {
             Client::initThread("writer worker");
@@ -144,10 +148,12 @@ namespace mongo {
         try {
             fassert(16359,st->syncApply(*o));
         } catch (DBException& e) {
+            error() << "writer worker caught exception: " << e.what() << endl;
             fassertFailed(16360);
         }
     }
 
+    // This free function is used by the initial sync writer threads to apply each op
     void multiInitSyncApply( OpPkg op ) {
         if (!ClientBasic::getCurrent()) {
             Client::initThread("writer worker");
@@ -159,7 +165,8 @@ namespace mongo {
         try {
             if (!st->syncApply(*o)) {
                 if (st->shouldRetry(*o)) {
-                    uassert(15915, "replSet update still fails after adding missing object", st->syncApply(*o));
+                    uassert(15915, "replSet update still fails after adding missing object", 
+                            st->syncApply(*o));
                 }
             }
         }
@@ -182,8 +189,9 @@ namespace mongo {
             // anything that's really wrong in syncTail
         }
     }
-    }
+    } // namespace replset
 
+    // The pool threads call this to prefetch each op
     void replset::SyncTail::prefetchOp(const BSONObj& op) {
         if (!ClientBasic::getCurrent()) {
             Client::initThread("prefetch worker");
@@ -195,6 +203,7 @@ namespace mongo {
         }
     }
 
+    // Doles out all the work to the reader pool threads and waits for them to complete
     void replset::SyncTail::prefetchOps(std::deque<BSONObj>& ops) {
         threadpool::ThreadPool& prefetcherPool = theReplSet->getPrefetchPool();
         for (std::deque<BSONObj>::iterator it = ops.begin();
@@ -205,6 +214,7 @@ namespace mongo {
         prefetcherPool.join();
     }
 
+    // Doles out all the work to the writer pool threads and waits for them to complete
     void replset::SyncTail::multiApply( std::deque<BSONObj>& ops, multiSyncApplyFunc f ) {
 
         // Use a ThreadPool to prefetch all the operations in a batch.
