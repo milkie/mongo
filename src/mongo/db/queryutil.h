@@ -149,6 +149,8 @@ namespace mongo {
             else {
                 _filter = q;
             }
+
+            _filter = _filter.getOwned();
         }
         
         void _reset() {
@@ -215,7 +217,7 @@ namespace mongo {
             if ( fields.isEmpty() )
                 return;
             _fields.reset( new Projection() );
-            _fields->init( fields );
+            _fields->init( fields.getOwned() );
         }
         
         const char * const _ns;
@@ -277,10 +279,23 @@ namespace mongo {
      */
     class FieldRange {
     public:
-        FieldRange( const BSONElement &e , bool singleKey , bool isNot=false , bool optimize=true );
+        /**
+         * Creates a FieldRange representing a superset of the BSONElement values matching a query
+         *     expression element.
+         * @param e - The query expression element.
+         * @param isNot - Indicates that 'e' appears within a query $not clause and its matching
+         *     semantics are inverted.
+         * @param optimize - If true, the range may be bracketed by 'e''s data type.
+         *     TODO It is unclear why 'optimize' is optional, see SERVER-5165.
+         */
+        FieldRange( const BSONElement &e , bool isNot, bool optimize );
 
-        /** @return Range intersection with 'other'. */
-        const FieldRange &operator&=( const FieldRange &other );
+        /**
+         * @return Range intersection with 'other'.
+         * @param singleKey - Indicate whether intersection will be performed in a single value or
+         *     multi value context.
+         */
+        const FieldRange &intersect( const FieldRange &other, bool singleKey );
         /** @return Range union with 'other'. */
         const FieldRange &operator|=( const FieldRange &other );
         /** @return Range of elements elements included in 'this' but not 'other'. */
@@ -338,7 +353,6 @@ namespace mongo {
         // Owns memory for our BSONElements.
         vector<BSONObj> _objData;
         string _special;
-        bool _singleKey;
         bool _simpleFiniteSet;
     };
     
@@ -361,11 +375,20 @@ namespace mongo {
     public:
         friend class OrRangeGenerator;
         friend class FieldRangeVector;
-        FieldRangeSet( const char *ns, const BSONObj &query , bool singleKey , bool optimize=true );
+        /**
+         * Creates a FieldRangeSet representing a superset of the documents matching a query.
+         * @param ns - The query's namespace.
+         * @param query - The query.
+         * @param singleKey - Indicates that document fields contain single values (there are no
+         *     multiply valued fields).
+         * @param optimize - If true, each field's value range may be bracketed by data type.
+         *     TODO It is unclear why 'optimize' is optional, see SERVER-5165.
+         */
+        FieldRangeSet( const char *ns, const BSONObj &query , bool singleKey , bool optimize );
         
         /** @return range for the given field. */
         const FieldRange &range( const char *fieldName ) const;
-        /** @return range for the given field. */
+        /** @return range for the given field.  Public for testing. */
         FieldRange &range( const char *fieldName );
         /** @return the number of non universal ranges. */
         int numNonUniversalRanges() const;
@@ -449,22 +472,48 @@ namespace mongo {
          */
         FieldRangeSet *subset( const BSONObj &fields ) const;
         
+        /**
+         * @return A new FieldRangeSet based on this FieldRangeSet, but with all field names
+         * prefixed by the specified @param prefix field name.
+         */
+        FieldRangeSet* prefixed( const string& prefix ) const;
+        
         bool singleKey() const { return _singleKey; }
         
         BSONObj originalQuery() const { return _queries[ 0 ]; }
         
         string toString() const;
+
     private:
+        /**
+         * Private constructor for implementation specific delegate objects.
+         * @param boundElemMatch - If false, FieldRanges will not be computed for $elemMatch
+         *     expressions.
+         */
+        FieldRangeSet( const char* ns, const BSONObj& query, bool singleKey, bool optimize,
+                       bool boundElemMatch );
+        /** Initializer shared by the constructors. */
+        void init( bool optimize );
+
         void appendQueries( const FieldRangeSet &other );
         void makeEmpty();
-        void processQueryField( const BSONElement &e, bool optimize );
-        void processOpElement( const char *fieldName, const BSONElement &f, bool isNot, bool optimize );
+
+        /**
+         * Query parsing routines.
+         * TODO integrate these with an external query parser shared by the matcher.  SERVER-1009
+         */
+        void handleMatchField( const BSONElement& matchElement, bool optimize );
+        void handleOp( const char* matchFieldName, const BSONElement& op, bool isNot,
+                       bool optimize );
+        void handleNotOp( const char* matchFieldName, const BSONElement& notOp, bool optimize );
+        void handleElemMatch( const char* matchFieldName, const BSONElement& elemMatch, bool isNot,
+                              bool optimize );
+
         /** Must be called when a match element is skipped or modified to generate a FieldRange. */
         void adjustMatchField();
         void intersectMatchField( const char *fieldName, const BSONElement &matchElement,
                                  bool isNot, bool optimize );
-        static FieldRange *__singleKeyUniversalRange;
-        static FieldRange *__multiKeyUniversalRange;
+        static FieldRange *__universalRange;
         const FieldRange &universalRange() const;
         map<string,FieldRange> _ranges;
         string _ns;
@@ -472,6 +521,7 @@ namespace mongo {
         vector<BSONObj> _queries;
         bool _singleKey;
         bool _simpleFiniteSet;
+        bool _boundElemMatch;
     };
 
     class NamespaceDetails;
