@@ -235,6 +235,8 @@ namespace ReplSetTests {
 
             // This now aborts the database:
             //ASSERT_THROWS(replset::multiInitSyncApply(oppkg), UserException);
+
+            drop();
         }
     };
 
@@ -281,6 +283,8 @@ namespace ReplSetTests {
 
             BSONObj fin = findOne();
             verify(fin["x"].Number() == 456);
+
+            drop();
         }
     };
 
@@ -502,6 +506,7 @@ namespace ReplSetTests {
             ASSERT_EQUALS(1334813368, obj["requests"]["1000002_2"]["timestamp"].number());
             ASSERT_EQUALS(1334810820, obj["requests"]["100002_1"]["timestamp"].number());
 
+            drop();
             // test dup key error
             //drop();
             //addUniqueIndex();
