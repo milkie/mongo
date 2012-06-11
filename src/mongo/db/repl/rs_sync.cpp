@@ -421,8 +421,8 @@ namespace mongo {
     }
 
     bool replset::SyncTail::tryPopAndWaitForMore(deque<BSONObj>& ops) {
-        BSONObj* op = NULL;
-        bool peek_success = peek(op);
+        BSONObj op;
+        bool peek_success = peek(&op);
 
         if (!peek_success) {
             // if we don't have anything in the queue, keep waiting on queue
@@ -437,17 +437,17 @@ namespace mongo {
         }
 
         // check for commands
-        if ((*op)["op"].valuestrsafe()[0] == 'c') {
+        if (op["op"].valuestrsafe()[0] == 'c') {
             if (ops.empty()) {
                 // apply commands one-at-a-time
-                ops.push_back(*op);
+                ops.push_back(op);
                 consume();
             }
 
             // otherwise, apply what we have so far and come back for the command
             return false;
         }
-        ops.push_back(*op);
+        ops.push_back(op);
         consume();
 
         return true;

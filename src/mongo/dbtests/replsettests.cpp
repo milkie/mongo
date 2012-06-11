@@ -86,7 +86,7 @@ namespace ReplSetTests {
             if (_queue.empty()) {
                 return false;
             }
-            op = &_queue.front();
+            *op = _queue.front();
             return true;
         }
         virtual void consume() {
