@@ -32,11 +32,11 @@ namespace mongo {
         const char *opField;
         const char *opType = op.getStringField("op");
         switch (*opType) {
-        case 'i':
-        case 'd':
+        case 'i': // insert
+        case 'd': // delete
             opField = "o";
             break;
-        case 'u':
+        case 'u': // update
             opField = "o2";
             break;
         default:
@@ -46,20 +46,23 @@ namespace mongo {
          
         BSONObj obj = op.getObjectField(opField);
         const char *ns = op.getStringField("ns");
+        NamespaceDetails *nsd = nsdetails(ns);
+        if (!nsd) return; // maybe not opened yet
 
-        prefetchIndexPages(ns, obj);
+        prefetchIndexPages(nsd, obj);
 
         // do not prefetch the data for inserts; it doesn't exist yet
-        if (*opType == 'u') {
+        if ((*opType == 'u') &&
+            // do not prefetch the data for capped collections because
+            // they typically do not have an _id index for findById() to use.
+            nsd->isCapped()) {
             prefetchRecordPages(ns, obj);
         }
     }
 
-    void prefetchIndexPages(const char *ns, const BSONObj& obj) {
+    void prefetchIndexPages(NamespaceDetails *nsd, const BSONObj& obj) {
         DiskLoc unusedDl; // unused
         IndexInterface::IndexInserter inserter;
-        NamespaceDetails *nsd = nsdetails(ns);
-        if (!nsd) return; // maybe not opened yet
 
         // includes all indexes, including ones
         // in the process of being built
