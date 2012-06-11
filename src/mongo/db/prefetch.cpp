@@ -31,13 +31,18 @@ namespace mongo {
     void prefetchPagesForReplicatedOp(const BSONObj& op) {
         const char *opField;
         const char *opType = op.getStringField("op");
-        if ( *opType == 'i' )
+        switch (*opType) {
+        case 'i':
+        case 'd':
             opField = "o";
-        else if( *opType == 'u' )
+            break;
+        case 'u':
             opField = "o2";
-        else
+            break;
+        default:
             // prefetch ignores other ops
             return;
+        }
          
         BSONObj obj = op.getObjectField(opField);
         const char *ns = op.getStringField("ns");
