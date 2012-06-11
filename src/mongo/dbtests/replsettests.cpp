@@ -233,7 +233,8 @@ namespace ReplSetTests {
             mock2.failOnStep = MockInitialSync::FAIL_BOTH_APPLY;
             oppkg.st = &mock2;
 
-            ASSERT_THROWS(replset::multiInitSyncApply(oppkg), UserException);
+            // This now aborts the database:
+            //ASSERT_THROWS(replset::multiInitSyncApply(oppkg), UserException);
         }
     };
 
@@ -270,7 +271,9 @@ namespace ReplSetTests {
             replset::OpPkg oppkg;
             oppkg.st = &sync;
             oppkg.op = &obj;
-            ASSERT_THROWS(multiInitSyncApply(oppkg), UserException);
+
+            // This now aborts the database
+            //ASSERT_THROWS(multiInitSyncApply(oppkg), UserException);
 
             sync.insertOnRetry = true;
             // succeeds
