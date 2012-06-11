@@ -460,6 +460,7 @@ namespace mongo {
                 // this updates theReplSet->lastOpTimeWritten
                 _logOpObjRS(op);
                 ops.pop_front();
+                getDur().commitIfNeeded();
              }
         }
 
