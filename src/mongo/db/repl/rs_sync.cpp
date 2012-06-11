@@ -178,15 +178,7 @@ namespace mongo {
             if( e.getCode() == 11000 || e.getCode() == 11001 || e.getCode() == 12582) {
                 return; // ignore
             }
-/*
-            if( ts <= minValid ) {
-                // didn't make it far enough
-                log() << "replSet initial sync failing, error applying oplog : " << e.toString() << rsLog;
-                return false;
-            }
-*/
-            // otherwise, whatever, we'll catch
-            // anything that's really wrong in syncTail
+            throw;
         }
     }
     } // namespace replset
