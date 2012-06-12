@@ -173,9 +173,9 @@ namespace mongo {
     }
 
     // Doles out all the work to the reader pool threads and waits for them to complete
-    void replset::SyncTail::prefetchOps(std::deque<BSONObj>& ops) {
+    void replset::SyncTail::prefetchOps(const std::deque<BSONObj>& ops) {
         threadpool::ThreadPool& prefetcherPool = theReplSet->getPrefetchPool();
-        for (std::deque<BSONObj>::iterator it = ops.begin();
+        for (std::deque<BSONObj>::const_iterator it = ops.begin();
              it != ops.end();
              ++it) {
             prefetcherPool.schedule(&prefetchOp, *it);
@@ -183,9 +183,9 @@ namespace mongo {
         prefetcherPool.join();
     }
     
-    void replset::SyncTail::applyOps(std::vector< std::vector<BSONObj> >& writerVectors, multiSyncApplyFunc applyFunc) {
+    void replset::SyncTail::applyOps(const std::vector< std::vector<BSONObj> >& writerVectors, multiSyncApplyFunc applyFunc) {
         ThreadPool& writerPool = theReplSet->getWriterPool();
-        for (std::vector< std::vector<BSONObj> >::iterator it = writerVectors.begin();
+        for (std::vector< std::vector<BSONObj> >::const_iterator it = writerVectors.begin();
              it != writerVectors.end();
              ++it) {
             writerPool.schedule(applyFunc, boost::cref(*it), this);
@@ -256,7 +256,7 @@ namespace mongo {
             deque<BSONObj> ops;
 
             while (ops.size() < 128) {
-                if (!tryPopAndWaitForMore(ops)) {
+                if (!tryPopAndWaitForMore(&ops)) {
                     break;
                 }
             }
@@ -280,7 +280,7 @@ namespace mongo {
                 // we want to keep a record of the last op applied, to compare with minvalid
                 const BSONObj& lastOp = ops[ops.size()-1];
                 OpTime tempTs = lastOp["ts"]._opTime();
-                clearOps(ops);
+                clearOps(&ops);
 
                 ts = tempTs;
             
@@ -345,7 +345,7 @@ namespace mongo {
             verify( !Lock::isLocked() );
 
             // always fetch a few ops first
-            tryPopAndWaitForMore(ops);
+            tryPopAndWaitForMore(&ops);
 
             while (ops.size() < 128) {
                 // occasionally check some things
@@ -375,7 +375,7 @@ namespace mongo {
                     }
                 }
 
-                if (!tryPopAndWaitForMore(ops)) {
+                if (!tryPopAndWaitForMore(&ops)) {
                     break;
                 }
             }
@@ -392,17 +392,17 @@ namespace mongo {
             }
             multiApply(ops, multiSyncApply);
 
-            clearOps(ops);
+            clearOps(&ops);
         }
     }
 
-    bool replset::SyncTail::tryPopAndWaitForMore(deque<BSONObj>& ops) {
+    bool replset::SyncTail::tryPopAndWaitForMore(std::deque<BSONObj>* ops) {
         BSONObj op;
         bool peek_success = peek(&op);
 
         if (!peek_success) {
             // if we don't have anything in the queue, keep waiting on queue
-            if (ops.empty()) {
+            if (ops->empty()) {
                 // block a bit
                 _queue->blockingPeek();
                 return true;
@@ -414,29 +414,29 @@ namespace mongo {
 
         // check for commands
         if (op["op"].valuestrsafe()[0] == 'c') {
-            if (ops.empty()) {
+            if (ops->empty()) {
                 // apply commands one-at-a-time
-                ops.push_back(op);
+                ops->push_back(op);
                 consume();
             }
 
             // otherwise, apply what we have so far and come back for the command
             return false;
         }
-        ops.push_back(op);
+        ops->push_back(op);
         consume();
 
         return true;
     }
 
-    void replset::SyncTail::clearOps(deque<BSONObj>& ops) {
+    void replset::SyncTail::clearOps(std::deque<BSONObj>* ops) {
         {
             Lock::DBWrite lk("local");
-            while (!ops.empty()) {
-                const BSONObj& op = ops.front();
+            while (!ops->empty()) {
+                const BSONObj& op = ops->front();
                 // this updates theReplSet->lastOpTimeWritten
                 _logOpObjRS(op);
-                ops.pop_front();
+                ops->pop_front();
                 getDur().commitIfNeeded();
              }
         }

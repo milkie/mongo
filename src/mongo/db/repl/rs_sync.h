@@ -45,13 +45,13 @@ namespace mongo {
 
             // returns true if we should continue waiting for BSONObjs, false if we should
             // stop waiting and apply the queue we have.  Only returns false if !ops.empty().
-            bool tryPopAndWaitForMore(std::deque<BSONObj>& ops);
-            void clearOps(std::deque<BSONObj>& ops);
+            bool tryPopAndWaitForMore(std::deque<BSONObj>* ops);
+            void clearOps(std::deque<BSONObj>* ops);
             void multiApply(std::deque<BSONObj>& ops, multiSyncApplyFunc applyFunc);
         private:
-            void prefetchOps(std::deque<BSONObj>& ops);
+            void prefetchOps(const std::deque<BSONObj>& ops);
             static void prefetchOp(const BSONObj& op);
-            void applyOps(std::vector< std::vector<BSONObj> >& writerVectors, multiSyncApplyFunc applyFunc);
+            void applyOps(const std::vector< std::vector<BSONObj> >& writerVectors, multiSyncApplyFunc applyFunc);
             void fillWriterVectors(const std::deque<BSONObj>& ops, 
                                    std::vector< std::vector<BSONObj> >* writerVectors);
             void handleSlaveDelay(const BSONObj& op);
