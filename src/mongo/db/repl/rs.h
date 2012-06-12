@@ -501,9 +501,9 @@ namespace mongo {
         bool _syncDoInitialSync_applyToHead( replset::InitialSync& init, OplogReader* r , 
                                              const Member* source, const BSONObj& lastOp, 
                                              BSONObj& minValidOut);
-        void _syncDoInitialSync(replset::ThreadPool& writerPool);
-        void syncDoInitialSync(replset::ThreadPool& writerPool);
-        void _syncThread(replset::ThreadPool& writerPool);
+        void _syncDoInitialSync();
+        void syncDoInitialSync();
+        void _syncThread();
         void syncTail();
         unsigned _syncRollback(OplogReader& r);
         void syncFixUp(HowToFixUp& h, OplogReader& r);
@@ -519,11 +519,12 @@ namespace mongo {
         static const int replWriterThreadCount = 32;
         static const int replPrefetcherThreadCount = 32;
         threadpool::ThreadPool& getPrefetchPool() { return _prefetcherPool; }
+        replset::ThreadPool& getWriterPool() { return _writerPool; }
 
         const ReplSetConfig::MemberCfg& myConfig() const { return _config; }
         bool tryToGoLiveAsASecondary(OpTime&); // readlocks
         void syncRollback(OplogReader& r);
-        void syncThread(replset::ThreadPool& pool);
+        void syncThread();
         const OpTime lastOtherOpTime() const;
     };
 
@@ -561,6 +562,7 @@ namespace mongo {
         void summarizeStatus(BSONObjBuilder& b) const  { _summarizeStatus(b); }
         void fillIsMaster(BSONObjBuilder& b) { _fillIsMaster(b); }
         threadpool::ThreadPool& getPrefetchPool() { return ReplSetImpl::getPrefetchPool(); }
+        replset::ThreadPool& getWriterPool() { return ReplSetImpl::getWriterPool(); }
 
         /**
          * We have a new config (reconfig) - apply it.

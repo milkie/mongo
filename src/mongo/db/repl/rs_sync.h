@@ -38,7 +38,7 @@ namespace replset {
         typedef void (*multiSyncApplyFunc)(OpPkg op);
     public:
         virtual ~SyncTail();
-        SyncTail(BackgroundSyncInterface *q, ThreadPool& writerPool);
+        SyncTail(BackgroundSyncInterface *q);
         virtual bool syncApply(const BSONObj &o);
         void oplogApplication();
         bool peek(BSONObj* op);
@@ -50,7 +50,6 @@ namespace replset {
         void clearOps(std::deque<BSONObj>& ops);
         void multiApply(std::deque<BSONObj>& ops, multiSyncApplyFunc f);
     private:
-        replset::ThreadPool& _writerPool;
         void prefetchOps(std::deque<BSONObj>& ops);
         static void prefetchOp(const BSONObj& op);
         void fillWriterQueues(ThreadPool& pool, std::deque<BSONObj>& ops);
@@ -64,7 +63,7 @@ namespace replset {
     class InitialSync : public SyncTail {
     public:
         virtual ~InitialSync();
-        InitialSync(BackgroundSyncInterface *q, ThreadPool& pool);
+        InitialSync(BackgroundSyncInterface *q);
         bool oplogApplication(const BSONObj& applyGTEObj, const BSONObj& minValidObj);
     };
 

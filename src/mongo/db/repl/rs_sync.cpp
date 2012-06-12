@@ -35,8 +35,8 @@ namespace mongo {
     using namespace bson;
     extern unsigned replSetForceInitialSyncFailure;
 
-    replset::SyncTail::SyncTail(BackgroundSyncInterface *q, replset::ThreadPool& writerPool) :
-        Sync(""), _queue(q), _writerPool(writerPool)
+    replset::SyncTail::SyncTail(BackgroundSyncInterface *q) :
+        Sync(""), _queue(q)
     {}
 
     replset::SyncTail::~SyncTail() {}
@@ -49,8 +49,8 @@ namespace mongo {
         _queue->consume();
     }
 
-    replset::InitialSync::InitialSync(BackgroundSyncInterface *q, replset::ThreadPool& writerPool) : 
-        SyncTail(q, writerPool) {}
+    replset::InitialSync::InitialSync(BackgroundSyncInterface *q) : 
+        SyncTail(q) {}
 
     replset::InitialSync::~InitialSync() {}
 
@@ -182,15 +182,16 @@ namespace mongo {
         prefetchOps(ops);
 
         // Prepare a replset::ThreadPool for writing ops in parallel.
-        fillWriterQueues( _writerPool, ops );
-        _writerPool.setTask( f );
+        replset::ThreadPool& writerPool = theReplSet->getWriterPool();
+        fillWriterQueues( writerPool, ops );
+        writerPool.setTask( f );
 
         {
             // stop all readers until we're done
             Lock::ParallelBatchWriterMode pbwm;
 
             // this blocks until all writer threads have finished
-            _writerPool.go();
+            writerPool.go();
         }
     }
 
@@ -537,7 +538,7 @@ namespace mongo {
         return _forceSyncTarget != 0;
     }
 
-    void ReplSetImpl::_syncThread(replset::ThreadPool& writerPool) {
+    void ReplSetImpl::_syncThread() {
         StateBox::SP sp = box.get();
         if( sp.state.primary() ) {
             sleepsecs(1);
@@ -550,16 +551,16 @@ namespace mongo {
 
         /* do we have anything at all? */
         if( lastOpTimeWritten.isNull() ) {
-            syncDoInitialSync(writerPool);
+            syncDoInitialSync();
             return; // _syncThread will be recalled, starts from top again in case sync failed.
         }
 
         /* we have some data.  continue tailing. */
-        replset::SyncTail tail(replset::BackgroundSync::get(), writerPool);
+        replset::SyncTail tail(replset::BackgroundSync::get());
         tail.oplogApplication();
     }
 
-    void ReplSetImpl::syncThread(replset::ThreadPool& writerPool) {
+    void ReplSetImpl::syncThread() {
         while( 1 ) {
             // After a reconfig, we may not be in the replica set anymore, so
             // check that we are in the set (and not an arbiter) before
@@ -576,7 +577,7 @@ namespace mongo {
             fassert(16113, !Lock::isLocked());
 
             try {
-                _syncThread(writerPool);
+                _syncThread();
             }
             catch(DBException& e) {
                 sethbmsg(str::stream() << "syncThread: " << e.toString());
@@ -591,7 +592,7 @@ namespace mongo {
         }
     }
 
-    void startSyncThread(replset::ThreadPool& writerPool) {
+    void startSyncThread() {
         static int n;
         if( n != 0 ) {
             log() << "replSet ERROR : more than one sync thread?" << rsLog;
@@ -602,7 +603,7 @@ namespace mongo {
         Client::initThread("rsSync");
         cc().iAmSyncThread(); // for isSyncThread() (which is used not used much, is used in secondary create index code
         replLocalAuth();
-        theReplSet->syncThread(writerPool);
+        theReplSet->syncThread();
         cc().shutdown();
     }
 

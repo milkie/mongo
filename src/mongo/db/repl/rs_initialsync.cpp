@@ -45,13 +45,13 @@ namespace mongo {
         }
     }
 
-    void ReplSetImpl::syncDoInitialSync(replset::ThreadPool& writerPool) {
+    void ReplSetImpl::syncDoInitialSync() {
         const static int maxFailedAttempts = 10;
         createOplog();
         int failedAttempts = 0;
         while ( failedAttempts < maxFailedAttempts ) {
             try {
-                _syncDoInitialSync(writerPool);
+                _syncDoInitialSync();
                 break;
             }
             catch(DBException& e) {
@@ -310,8 +310,8 @@ namespace mongo {
     /**
      * Do the initial sync for this member.
      */
-    void ReplSetImpl::_syncDoInitialSync(replset::ThreadPool& workerPool) {
-        replset::InitialSync init(replset::BackgroundSync::get(), workerPool);
+    void ReplSetImpl::_syncDoInitialSync() {
+        replset::InitialSync init(replset::BackgroundSync::get());
         sethbmsg("initial sync pending",0);
 
         // if this is the first node, it may have already become primary

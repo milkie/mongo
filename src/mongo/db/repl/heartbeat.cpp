@@ -377,7 +377,7 @@ namespace mongo {
         task::repeat(task, 2000);
     }
 
-    void startSyncThread(replset::ThreadPool& writerPool);
+    void startSyncThread();
 
     /** called during repl set startup.  caller expects it to return fairly quickly.
         note ReplSet object is only created once we get a config - so this won't run
@@ -391,7 +391,7 @@ namespace mongo {
             return;
         }
 
-        boost::thread t(startSyncThread, boost::ref(_writerPool));
+        boost::thread t(startSyncThread);
 
         replset::BackgroundSync* sync = replset::BackgroundSync::get();
         boost::thread producer(boost::bind(&replset::BackgroundSync::producerThread, sync));
