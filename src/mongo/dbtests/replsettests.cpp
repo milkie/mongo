@@ -109,7 +109,6 @@ namespace ReplSetTests {
         static DBDirectClient client_;
     protected:
         BackgroundSyncTest* _bgsync;
-        replset::ThreadPool* _threadpool;
         replset::SyncTail* _tailer;
     public:
         Base() {
@@ -120,7 +119,6 @@ namespace ReplSetTests {
         }
         ~Base() {
             delete _bgsync;
-            delete _threadpool;
             delete _tailer;
         }
 
@@ -156,8 +154,7 @@ namespace ReplSetTests {
             _bgsync = new BackgroundSyncTest();
 
             // setup tail
-            _threadpool = new replset::ThreadPool(theReplSet->replWriterThreadCount);
-            _tailer = new replset::SyncTail(_bgsync, *_threadpool);
+            _tailer = new replset::SyncTail(_bgsync);
 
             // setup theReplSet
             ReplSetTest *rst = new ReplSetTest();
@@ -173,7 +170,7 @@ namespace ReplSetTests {
     class MockInitialSync : public replset::InitialSync {
         int step;
     public:
-        MockInitialSync(replset::ThreadPool& tp) : InitialSync(0, tp), step(0), failOnStep(SUCCEED), retry(true) {}
+        MockInitialSync() : InitialSync(0), step(0), failOnStep(SUCCEED), retry(true) {}
 
         enum FailOn {SUCCEED, FAIL_FIRST_APPLY, FAIL_BOTH_APPLY};
 
@@ -212,30 +209,18 @@ namespace ReplSetTests {
             b.append("ns","dummy");
             b.appendTimestamp("ts", o.asLL());
             BSONObj obj = b.obj();
-            replset::ThreadPool tp(theReplSet->replWriterThreadCount);
-            MockInitialSync mock(tp);
+            MockInitialSync mock;
 
             // all three should succeed
-
-            replset::OpPkg oppkg;
-            oppkg.st = &mock;
-            oppkg.op = &obj;
-
-            replset::multiInitSyncApply(oppkg);
+            std::vector<BSONObj> ops;
+            ops.push_back(obj);
+            replset::multiInitSyncApply(ops, &mock);
 
             mock.failOnStep = MockInitialSync::FAIL_FIRST_APPLY;
-            replset::multiInitSyncApply(oppkg);
+            replset::multiInitSyncApply(ops, &mock);
 
             mock.retry = false;
-            replset::multiInitSyncApply(oppkg);
-
-            // force failure
-            MockInitialSync mock2(tp);
-            mock2.failOnStep = MockInitialSync::FAIL_BOTH_APPLY;
-            oppkg.st = &mock2;
-
-            // This now aborts the database:
-            //ASSERT_THROWS(replset::multiInitSyncApply(oppkg), UserException);
+            replset::multiInitSyncApply(ops, &mock);
 
             drop();
         }
@@ -244,7 +229,7 @@ namespace ReplSetTests {
     class SyncTest2 : public replset::InitialSync {
     public:
         bool insertOnRetry;
-        SyncTest2(replset::ThreadPool& tp) : InitialSync(0, tp), insertOnRetry(false) {}
+        SyncTest2() : InitialSync(0), insertOnRetry(false) {}
         virtual ~SyncTest2() {}
         virtual bool shouldRetry(const BSONObj& o) {
             if (!insertOnRetry) {
@@ -268,19 +253,16 @@ namespace ReplSetTests {
             b.append("o2", BSON("_id" << 123));
             b.append("ns", ns());
             BSONObj obj = b.obj();
-            replset::ThreadPool tp(theReplSet->replWriterThreadCount);
-            SyncTest2 sync(tp);
-
-            replset::OpPkg oppkg;
-            oppkg.st = &sync;
-            oppkg.op = &obj;
+            SyncTest2 sync2;
+            std::vector<BSONObj> ops;
+            ops.push_back(obj);
 
             // This now aborts the database
             //ASSERT_THROWS(multiInitSyncApply(oppkg), UserException);
 
-            sync.insertOnRetry = true;
+            sync2.insertOnRetry = true;
             // succeeds
-            multiInitSyncApply(oppkg);
+            multiInitSyncApply(ops, &sync2);
 
             BSONObj fin = findOne();
             verify(fin["x"].Number() == 456);

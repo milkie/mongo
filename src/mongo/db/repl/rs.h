@@ -26,7 +26,6 @@
 #include "mongo/db/repl/rs_member.h"
 #include "mongo/db/repl/rs_optime.h"
 #include "mongo/db/repl/rs_sync.h"
-#include "mongo/db/repl/rs_thread_pool.h"
 #include "mongo/util/concurrency/list.h"
 #include "mongo/util/concurrency/msg.h"
 #include "mongo/util/concurrency/thread_pool.h"
@@ -511,7 +510,7 @@ namespace mongo {
         // keep a list of hosts that we've tried recently that didn't work
         map<string,time_t> _veto;
         // persistent pool of worker threads for syncing
-        replset::ThreadPool _writerPool;
+        threadpool::ThreadPool _writerPool;
         // persistent pool of worker threads for prefetching
         threadpool::ThreadPool _prefetcherPool;
 
@@ -519,7 +518,7 @@ namespace mongo {
         static const int replWriterThreadCount = 32;
         static const int replPrefetcherThreadCount = 32;
         threadpool::ThreadPool& getPrefetchPool() { return _prefetcherPool; }
-        replset::ThreadPool& getWriterPool() { return _writerPool; }
+        threadpool::ThreadPool& getWriterPool() { return _writerPool; }
 
         const ReplSetConfig::MemberCfg& myConfig() const { return _config; }
         bool tryToGoLiveAsASecondary(OpTime&); // readlocks
@@ -562,7 +561,7 @@ namespace mongo {
         void summarizeStatus(BSONObjBuilder& b) const  { _summarizeStatus(b); }
         void fillIsMaster(BSONObjBuilder& b) { _fillIsMaster(b); }
         threadpool::ThreadPool& getPrefetchPool() { return ReplSetImpl::getPrefetchPool(); }
-        replset::ThreadPool& getWriterPool() { return ReplSetImpl::getWriterPool(); }
+        threadpool::ThreadPool& getWriterPool() { return ReplSetImpl::getWriterPool(); }
 
         /**
          * We have a new config (reconfig) - apply it.

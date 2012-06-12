@@ -18,6 +18,8 @@
 
 #include "mongo/db/repl/rs_sync.h"
 
+#include <vector>
+
 #include "third_party/murmurhash3/MurmurHash3.h"
 
 #include "mongo/db/client.h"
@@ -28,7 +30,6 @@
 #include "mongo/db/repl/bgsync.h"
 #include "mongo/db/repl/rs.h"
 #include "mongo/db/repl/rs_sync.h"
-#include "mongo/db/repl/rs_thread_pool.h"
 
 namespace mongo {
 
@@ -104,52 +105,59 @@ namespace mongo {
     }
 
     namespace replset {
-    // This free function is used by the writer threads to apply each op
-    void multiSyncApply( OpPkg op ) {
-        if (!ClientBasic::getCurrent()) {
-            Client::initThread("writer worker");
-            // allow us to get through the magic barrier
-            Lock::ParallelBatchWriterMode::iAmABatchParticipant();
-        }
-        SyncTail* st = op.st;
-        const BSONObj* o = op.op;
-        try {
-            fassert(16359,st->syncApply(*o));
-        } catch (DBException& e) {
-            error() << "writer worker caught exception: " << e.what() << " on: " << o->toString() << endl;
-            fassertFailed(16360);
-        }
-    }
+        // This free function is used by the writer threads to apply each op
+        void multiSyncApply(std::vector<BSONObj>& ops, SyncTail* st) {
 
-    // This free function is used by the initial sync writer threads to apply each op
-    void multiInitSyncApply( OpPkg op ) {
-        if (!ClientBasic::getCurrent()) {
-            Client::initThread("writer worker");
-            // allow us to get through the magic barrier
-            Lock::ParallelBatchWriterMode::iAmABatchParticipant();
-        }
-        SyncTail* st = op.st;
-        const BSONObj* o = op.op;
-        try {
-            if (!st->syncApply(*o)) {
-                if (st->shouldRetry(*o)) {
-                    massert(15915, "replSet update still fails after adding missing object", 
-                            st->syncApply(*o));
+            if (!ClientBasic::getCurrent()) {
+                Client::initThread("writer worker");
+                // allow us to get through the magic barrier
+                Lock::ParallelBatchWriterMode::iAmABatchParticipant();
+            }
+            
+            for (std::vector<BSONObj>::iterator it = ops.begin();
+                 it != ops.end();
+                 ++it) {
+                try {
+                    fassert(16359,st->syncApply(*it));
+                } catch (DBException& e) {
+                    error() << "writer worker caught exception: " << e.what() << " on: " << it->toString() << endl;
+                    fassertFailed(16360);
                 }
             }
         }
-        catch (DBException& e) {
-            // Skip duplicate key exceptions.
-            // These are relatively common on initial sync: if a document is inserted
-            // early in the clone step, the insert will be replayed but the document
-            // will probably already have been cloned over.
-            if( e.getCode() == 11000 || e.getCode() == 11001 || e.getCode() == 12582) {
-                return; // ignore
+
+        // This free function is used by the initial sync writer threads to apply each op
+        void multiInitSyncApply(std::vector<BSONObj>& ops, SyncTail* st) {
+            if (!ClientBasic::getCurrent()) {
+                Client::initThread("writer worker");
+                // allow us to get through the magic barrier
+                Lock::ParallelBatchWriterMode::iAmABatchParticipant();
             }
-            error() << "writer worker caught exception: " << e.what() << " on: " << o->toString() << endl;
-            fassertFailed(16361);
+            
+            for (std::vector<BSONObj>::iterator it = ops.begin();
+                 it != ops.end();
+                 ++it) {
+                try {
+                    if (!st->syncApply(*it)) {
+                        if (st->shouldRetry(*it)) {
+                            massert(15915, "replSet update still fails after adding missing object", 
+                                    st->syncApply(*it));
+                        }
+                    }
+                }
+                catch (DBException& e) {
+                    // Skip duplicate key exceptions.
+                    // These are relatively common on initial sync: if a document is inserted
+                    // early in the clone step, the insert will be replayed but the document
+                    // will probably already have been cloned over.
+                    if( e.getCode() == 11000 || e.getCode() == 11001 || e.getCode() == 12582) {
+                        return; // ignore
+                    }
+                    error() << "writer worker caught exception: " << e.what() << " on: " << it->toString() << endl;
+                    fassertFailed(16361);
+                }
+            }
         }
-    }
     } // namespace replset
 
     // The pool threads call this to prefetch each op
@@ -174,32 +182,39 @@ namespace mongo {
         }
         prefetcherPool.join();
     }
+    
+    void replset::SyncTail::applyOps(std::vector< std::vector<BSONObj> >& writerVectors, multiSyncApplyFunc applyFunc) {
+        ThreadPool& writerPool = theReplSet->getWriterPool();
+        for (std::vector< std::vector<BSONObj> >::iterator it = writerVectors.begin();
+             it != writerVectors.end();
+             ++it) {
+            writerPool.schedule(applyFunc, boost::ref(*it), this);
+        }
+        writerPool.join();
+    }
 
     // Doles out all the work to the writer pool threads and waits for them to complete
-    void replset::SyncTail::multiApply( std::deque<BSONObj>& ops, multiSyncApplyFunc f ) {
+    void replset::SyncTail::multiApply( std::deque<BSONObj>& ops, multiSyncApplyFunc applyFunc ) {
 
         // Use a ThreadPool to prefetch all the operations in a batch.
         prefetchOps(ops);
+        
+        std::vector< std::vector<BSONObj> > writerVectors(theReplSet->replWriterThreadCount);
+    fillWriterVectors(ops, &writerVectors);
 
-        // Prepare a replset::ThreadPool for writing ops in parallel.
-        replset::ThreadPool& writerPool = theReplSet->getWriterPool();
-        fillWriterQueues( writerPool, ops );
-        writerPool.setTask( f );
 
-        {
-            // stop all readers until we're done
-            Lock::ParallelBatchWriterMode pbwm;
+        // stop all readers until we're done
+    Lock::ParallelBatchWriterMode pbwm;
 
-            // this blocks until all writer threads have finished
-            writerPool.go();
-        }
-    }
+    applyOps(writerVectors, applyFunc);
+        //fillWriterQueues( writerPool, ops );
+    
+//    writerPool.setTask( f );
+    
+}
 
-    /* fills the writer thread's queues with operations.
-       hashes on namespace name to ensure that ops on a given ns
-       are applied in order.
-    */
-    void replset::SyncTail::fillWriterQueues(replset::ThreadPool& pool, std::deque<BSONObj>& ops) {
+
+    void replset::SyncTail::fillWriterVectors(const std::deque<BSONObj>& ops, std::vector< std::vector<BSONObj> >* writerVectors) {
         for (std::deque<BSONObj>::const_iterator it = ops.begin();
              it != ops.end();
              ++it) {
@@ -210,10 +225,7 @@ namespace mongo {
             uint32_t hash = 0;
             MurmurHash3_x86_32( ns, len, 0, &hash);
 
-            OpPkg oppkg;
-            oppkg.st = this;
-            oppkg.op = &(*it); // the queue maintains the storage for the BSON objects
-            pool.enqueue(hash % theReplSet->replWriterThreadCount, oppkg);
+            (*writerVectors)[hash % writerVectors->size()].push_back(*it);
         }
     }
 
