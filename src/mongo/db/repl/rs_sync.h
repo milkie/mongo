@@ -55,6 +55,7 @@ namespace mongo {
             void fillWriterVectors(const std::deque<BSONObj>& ops, 
                                    std::vector< std::vector<BSONObj> >* writerVectors);
             void handleSlaveDelay(const BSONObj& op);
+            void obtainLock(const char* ns, bool isCommand, boost::shared_ptr<Lock::ScopedLock> lk);
         };
 
         /**

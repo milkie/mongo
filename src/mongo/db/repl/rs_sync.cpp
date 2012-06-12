@@ -55,38 +55,43 @@ namespace mongo {
 
     replset::InitialSync::~InitialSync() {}
 
-    /* apply the log op that is in param o
-       @return bool success (true) or failure (false)
-    */
-    bool replset::SyncTail::syncApply(const BSONObj &o) {
-        const char *ns = o.getStringField("ns");
-        verify(ns);
 
+    void replset::SyncTail::obtainLock(const char* ns, bool isCommand, boost::shared_ptr<Lock::ScopedLock> lk) {
         // Prevent pending write locks from blocking read locks
         // while fsync is active
         SimpleMutex::scoped_lock fsynclk(filesLockedFsync);
 
-        scoped_ptr<Lock::ScopedLock> lk;
-
-        if ( (*ns == '\0') || (*ns == '.') ) {
-            // this is ugly
-            // this is often a no-op
-            // but can't be 100% sure
-            if( *o.getStringField("op") != 'n' ) {
-                log() << "replSet skipping bad op in oplog: " << o.toString() << rsLog;
-            }
-            return true;
-        }
-
-        if( str::contains(ns, ".$cmd") ) {
+        if(isCommand) {
             // a command may need a global write lock. so we will conservatively go 
             // ahead and grab one here. suboptimal. :-(
             lk.reset(new Lock::GlobalWrite());
         } else {
             // DB level lock for this operation
-            lk.reset( new Lock::DBWrite(ns) );
+            lk.reset(new Lock::DBWrite(ns));
         }
-        
+    }
+
+    /* apply the log op that is in param o
+       @return bool success (true) or failure (false)
+    */
+    bool replset::SyncTail::syncApply(const BSONObj &op) {
+        const char *ns = op.getStringField("ns");
+        verify(ns);
+
+        if ( (*ns == '\0') || (*ns == '.') ) {
+            // this is ugly
+            // this is often a no-op
+            // but can't be 100% sure
+            if( *op.getStringField("op") != 'n' ) {
+                log() << "replSet skipping bad op in oplog: " << op.toString() << rsLog;
+            }
+            return true;
+        }
+
+        bool isCommand(op["op"].valuestrsafe()[0] == 'c');
+
+        boost::shared_ptr<Lock::ScopedLock> lk;
+        obtainLock(ns, isCommand, lk);
 
         /* if we have become primary, we don't want to apply things from elsewhere
            anymore. assumePrimary is in the db lock so we are safe as long as
@@ -98,7 +103,7 @@ namespace mongo {
 
         Client::Context ctx(ns, dbpath, false);
         ctx.getClient()->curop()->reset();
-        bool ok = !applyOperation_inlock(o);
+        bool ok = !applyOperation_inlock(op);
         getDur().commitIfNeeded();
 
         return ok;
