@@ -55,7 +55,7 @@ namespace mongo {
         if ((*opType == 'u') &&
             // do not prefetch the data for capped collections because
             // they typically do not have an _id index for findById() to use.
-            nsd->isCapped()) {
+            !nsd->isCapped()) {
             prefetchRecordPages(ns, obj);
         }
     }
