@@ -34,7 +34,7 @@ namespace mongo {
          */
         class SyncTail : public Sync {
             BackgroundSyncInterface* _queue;
-            typedef void (*multiSyncApplyFunc)(std::vector<BSONObj>& ops, SyncTail* st);
+            typedef void (*multiSyncApplyFunc)(const std::vector<BSONObj>& ops, SyncTail* st);
         public:
             virtual ~SyncTail();
             SyncTail(BackgroundSyncInterface *q);
@@ -70,8 +70,8 @@ namespace mongo {
         // TODO: move hbmsg into an error-keeping class (SERVER-4444)
         void sethbmsg(const string& s, const int logLevel=0);
 
-        void multiSyncApply(std::vector<BSONObj>& ops, SyncTail* st);
-        void multiInitSyncApply(std::vector<BSONObj>& ops, SyncTail* st);
+        void multiSyncApply(const std::vector<BSONObj>& ops, SyncTail* st);
+        void multiInitSyncApply(const std::vector<BSONObj>& ops, SyncTail* st);
 
     } // namespace replset
 } // namespace mongo

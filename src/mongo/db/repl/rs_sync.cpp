@@ -106,7 +106,7 @@ namespace mongo {
 
     namespace replset {
         // This free function is used by the writer threads to apply each op
-        void multiSyncApply(std::vector<BSONObj>& ops, SyncTail* st) {
+        void multiSyncApply(const std::vector<BSONObj>& ops, SyncTail* st) {
 
             if (!ClientBasic::getCurrent()) {
                 Client::initThread("writer worker");
@@ -114,7 +114,7 @@ namespace mongo {
                 Lock::ParallelBatchWriterMode::iAmABatchParticipant();
             }
             
-            for (std::vector<BSONObj>::iterator it = ops.begin();
+            for (std::vector<BSONObj>::const_iterator it = ops.begin();
                  it != ops.end();
                  ++it) {
                 try {
@@ -127,14 +127,14 @@ namespace mongo {
         }
 
         // This free function is used by the initial sync writer threads to apply each op
-        void multiInitSyncApply(std::vector<BSONObj>& ops, SyncTail* st) {
+        void multiInitSyncApply(const std::vector<BSONObj>& ops, SyncTail* st) {
             if (!ClientBasic::getCurrent()) {
                 Client::initThread("writer worker");
                 // allow us to get through the magic barrier
                 Lock::ParallelBatchWriterMode::iAmABatchParticipant();
             }
             
-            for (std::vector<BSONObj>::iterator it = ops.begin();
+            for (std::vector<BSONObj>::const_iterator it = ops.begin();
                  it != ops.end();
                  ++it) {
                 try {
@@ -188,7 +188,7 @@ namespace mongo {
         for (std::vector< std::vector<BSONObj> >::iterator it = writerVectors.begin();
              it != writerVectors.end();
              ++it) {
-            writerPool.schedule(applyFunc, boost::ref(*it), this);
+            writerPool.schedule(applyFunc, boost::cref(*it), this);
         }
         writerPool.join();
     }
@@ -200,18 +200,13 @@ namespace mongo {
         prefetchOps(ops);
         
         std::vector< std::vector<BSONObj> > writerVectors(theReplSet->replWriterThreadCount);
-    fillWriterVectors(ops, &writerVectors);
-
+        fillWriterVectors(ops, &writerVectors);
 
         // stop all readers until we're done
-    Lock::ParallelBatchWriterMode pbwm;
+        Lock::ParallelBatchWriterMode pbwm;
 
-    applyOps(writerVectors, applyFunc);
-        //fillWriterQueues( writerPool, ops );
-    
-//    writerPool.setTask( f );
-    
-}
+        applyOps(writerVectors, applyFunc);
+    }
 
 
     void replset::SyncTail::fillWriterVectors(const std::deque<BSONObj>& ops, std::vector< std::vector<BSONObj> >* writerVectors) {
