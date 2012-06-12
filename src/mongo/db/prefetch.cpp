@@ -49,6 +49,7 @@ namespace mongo {
         NamespaceDetails *nsd = nsdetails(ns);
         if (!nsd) return; // maybe not opened yet
 
+        log(4) << "index prefetch for op " << *opType << endl;
         prefetchIndexPages(nsd, obj);
 
         // do not prefetch the data for inserts; it doesn't exist yet
@@ -68,17 +69,14 @@ namespace mongo {
         // in the process of being built
         int indexCount = nsd->nIndexesBeingBuilt(); 
         BSONObjSet unusedKeys;
-        //vector<int> multi;
-        //vector<BSONObjSet> multiKeys;
         for ( int indexNo = 0; indexNo < indexCount; indexNo++ ) {
             // This will page in all index pages for the given object.
-            fetchIndexInserters(/*out*/unusedKeys, inserter, nsd, indexNo, obj, unusedDl);
-            // do something with multikeys later?
-            // if( keys.size() > 1 ) {
-            //     multi.push_back(i);
-            //     multiKeys.push_back(BSONObjSet());
-            //     multiKeys[multiKeys.size()-1].swap(keys);
-            // }
+            try {
+                fetchIndexInserters(/*out*/unusedKeys, inserter, nsd, indexNo, obj, unusedDl);
+            }
+            catch (const DBException& e) {
+                LOG(2) << "exception in prefetcher: " << e.what() << endl;
+            }
             unusedKeys.clear();
         }
     }
