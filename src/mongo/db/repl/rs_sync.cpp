@@ -55,22 +55,6 @@ namespace mongo {
 
     replset::InitialSync::~InitialSync() {}
 
-
-    void replset::SyncTail::obtainLock(const char* ns, bool isCommand, boost::shared_ptr<Lock::ScopedLock> lk) {
-        // Prevent pending write locks from blocking read locks
-        // while fsync is active
-        SimpleMutex::scoped_lock fsynclk(filesLockedFsync);
-
-        if(isCommand) {
-            // a command may need a global write lock. so we will conservatively go 
-            // ahead and grab one here. suboptimal. :-(
-            lk.reset(new Lock::GlobalWrite());
-        } else {
-            // DB level lock for this operation
-            lk.reset(new Lock::DBWrite(ns));
-        }
-    }
-
     /* apply the log op that is in param o
        @return bool success (true) or failure (false)
     */
@@ -90,9 +74,21 @@ namespace mongo {
 
         bool isCommand(op["op"].valuestrsafe()[0] == 'c');
 
-        boost::shared_ptr<Lock::ScopedLock> lk;
-        obtainLock(ns, isCommand, lk);
+        boost::scoped_ptr<Lock::ScopedLock> lk;
 
+        {
+
+            if(isCommand) {
+                // a command may need a global write lock. so we will conservatively go 
+                // ahead and grab one here. suboptimal. :-(
+                lk.reset(new Lock::GlobalWrite());
+            } else {
+                // DB level lock for this operation
+                lk.reset(new Lock::DBWrite(ns));
+            }
+            verify(Lock::somethingWriteLocked());
+        }
+        verify(Lock::somethingWriteLocked());
         /* if we have become primary, we don't want to apply things from elsewhere
            anymore. assumePrimary is in the db lock so we are safe as long as
            we check after we locked above. */
@@ -206,6 +202,11 @@ namespace mongo {
         
         std::vector< std::vector<BSONObj> > writerVectors(theReplSet->replWriterThreadCount);
         fillWriterVectors(ops, &writerVectors);
+
+        // We must grab this because we're going to grab write locks later.
+        // We hold this mutex the entire time we're writing; it doesn't matter
+        // because all readers are blocked anyway.
+        SimpleMutex::scoped_lock fsynclk(filesLockedFsync);
 
         // stop all readers until we're done
         Lock::ParallelBatchWriterMode pbwm;
