@@ -76,19 +76,15 @@ namespace mongo {
 
         boost::scoped_ptr<Lock::ScopedLock> lk;
 
-        {
-
-            if(isCommand) {
-                // a command may need a global write lock. so we will conservatively go 
-                // ahead and grab one here. suboptimal. :-(
-                lk.reset(new Lock::GlobalWrite());
-            } else {
-                // DB level lock for this operation
-                lk.reset(new Lock::DBWrite(ns));
-            }
-            verify(Lock::somethingWriteLocked());
+        if(isCommand) {
+            // a command may need a global write lock. so we will conservatively go 
+            // ahead and grab one here. suboptimal. :-(
+            lk.reset(new Lock::GlobalWrite());
+        } else {
+            // DB level lock for this operation
+            lk.reset(new Lock::DBWrite(ns));
         }
-        verify(Lock::somethingWriteLocked());
+
         /* if we have become primary, we don't want to apply things from elsewhere
            anymore. assumePrimary is in the db lock so we are safe as long as
            we check after we locked above. */
