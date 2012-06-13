@@ -98,7 +98,7 @@ namespace ReplSetTests {
         void addDoc(BSONObj doc) {
             _queue.push(doc.getOwned());
         }
-        virtual void blockingPeek() {
+        virtual void waitForMore() {
             return;
         }
     };
@@ -214,13 +214,13 @@ namespace ReplSetTests {
             // all three should succeed
             std::vector<BSONObj> ops;
             ops.push_back(obj);
-            replset::multiInitSyncApply(ops, &mock);
+            replset::multiInitialSyncApply(ops, &mock);
 
             mock.failOnStep = MockInitialSync::FAIL_FIRST_APPLY;
-            replset::multiInitSyncApply(ops, &mock);
+            replset::multiInitialSyncApply(ops, &mock);
 
             mock.retry = false;
-            replset::multiInitSyncApply(ops, &mock);
+            replset::multiInitialSyncApply(ops, &mock);
 
             drop();
         }
@@ -262,7 +262,7 @@ namespace ReplSetTests {
 
             sync2.insertOnRetry = true;
             // succeeds
-            multiInitSyncApply(ops, &sync2);
+            multiInitialSyncApply(ops, &sync2);
 
             BSONObj fin = findOne();
             verify(fin["x"].Number() == 456);
