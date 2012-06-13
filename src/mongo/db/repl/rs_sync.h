@@ -33,7 +33,6 @@ namespace mongo {
          * "Normal" replica set syncing
          */
         class SyncTail : public Sync {
-            BackgroundSyncInterface* _queue;
             typedef void (*multiSyncApplyFunc)(const std::vector<BSONObj>& ops, SyncTail* st);
         public:
             virtual ~SyncTail();
@@ -47,8 +46,11 @@ namespace mongo {
             // stop waiting and apply the queue we have.  Only returns false if !ops.empty().
             bool tryPopAndWaitForMore(std::deque<BSONObj>* ops);
             void clearOps(std::deque<BSONObj>* ops);
+        protected:
+            static const unsigned int replBatchSize = 128;
             void multiApply(std::deque<BSONObj>& ops, multiSyncApplyFunc applyFunc);
         private:
+            BackgroundSyncInterface* _queue;
             void prefetchOps(const std::deque<BSONObj>& ops);
             static void prefetchOp(const BSONObj& op);
             void applyOps(const std::vector< std::vector<BSONObj> >& writerVectors, multiSyncApplyFunc applyFunc);
@@ -64,14 +66,14 @@ namespace mongo {
         public:
             virtual ~InitialSync();
             InitialSync(BackgroundSyncInterface *q);
-            bool oplogApplication(const BSONObj& applyGTEObj, const BSONObj& minValidObj);
+            void oplogApplication(const BSONObj& applyGTEObj, const BSONObj& minValidObj);
         };
 
         // TODO: move hbmsg into an error-keeping class (SERVER-4444)
         void sethbmsg(const string& s, const int logLevel=0);
 
         void multiSyncApply(const std::vector<BSONObj>& ops, SyncTail* st);
-        void multiInitSyncApply(const std::vector<BSONObj>& ops, SyncTail* st);
+        void multiInitialSyncApply(const std::vector<BSONObj>& ops, SyncTail* st);
 
     } // namespace replset
 } // namespace mongo

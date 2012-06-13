@@ -28,7 +28,7 @@ namespace replset {
 
     BackgroundSyncInterface::~BackgroundSyncInterface() {}
 
-    size_t getSize(BSONObj const& o) {
+    size_t getSize(const BSONObj& o) {
         return o.objsize();
     }
 
@@ -334,8 +334,9 @@ namespace replset {
         return _buffer.peek(*op);
     }
 
-    void BackgroundSync::blockingPeek() {
+    void BackgroundSync::waitForMore() {
         BSONObj op;
+        // Block for one second before timing out.
         _buffer.blockingPeek(op, 1);
     }
 

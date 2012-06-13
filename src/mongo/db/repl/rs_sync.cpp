@@ -82,14 +82,14 @@ namespace mongo {
             lk.reset(new Lock::GlobalWrite());
         } else {
             // DB level lock for this operation
-            lk.reset(new Lock::DBWrite(ns));
+            lk.reset(new Lock::DBWrite(ns)); 
         }
 
-        /* if we have become primary, we don't want to apply things from elsewhere
-           anymore. assumePrimary is in the db lock so we are safe as long as
-           we check after we locked above. */
+        // if we have become primary, we don't want to apply things from elsewhere
+        // anymore. assumePrimary is in the db lock so we are safe as long as
+        // we check after we locked above.
         if( theReplSet->isPrimary() ) {
-            log(0) << "replSet stopping syncTail we are now primary" << rsLog;
+            log() << "replSet stopping syncTail we are now primary" << rsLog;
             return false;
         }
 
@@ -102,35 +102,34 @@ namespace mongo {
     }
 
     namespace replset {
-        // This free function is used by the writer threads to apply each op
-        void multiSyncApply(const std::vector<BSONObj>& ops, SyncTail* st) {
-
+        void initializeWriterThread() {
+            // Only do this once per thread
             if (!ClientBasic::getCurrent()) {
-                Client::initThread("writer worker");
+                Client::initThread("repl writer worker");
                 // allow us to get through the magic barrier
                 Lock::ParallelBatchWriterMode::iAmABatchParticipant();
             }
-            
+        }
+
+        // This free function is used by the writer threads to apply each op
+        void multiSyncApply(const std::vector<BSONObj>& ops, SyncTail* st) {
+            initializeWriterThread();
             for (std::vector<BSONObj>::const_iterator it = ops.begin();
                  it != ops.end();
                  ++it) {
                 try {
-                    fassert(16359,st->syncApply(*it));
+                    fassert(16359, st->syncApply(*it));
                 } catch (DBException& e) {
-                    error() << "writer worker caught exception: " << e.what() << " on: " << it->toString() << endl;
+                    error() << "writer worker caught exception: " << e.what() 
+                            << " on: " << it->toString() << endl;
                     fassertFailed(16360);
                 }
             }
         }
 
         // This free function is used by the initial sync writer threads to apply each op
-        void multiInitSyncApply(const std::vector<BSONObj>& ops, SyncTail* st) {
-            if (!ClientBasic::getCurrent()) {
-                Client::initThread("writer worker");
-                // allow us to get through the magic barrier
-                Lock::ParallelBatchWriterMode::iAmABatchParticipant();
-            }
-            
+        void multiInitialSyncApply(const std::vector<BSONObj>& ops, SyncTail* st) {
+            initializeWriterThread();
             for (std::vector<BSONObj>::const_iterator it = ops.begin();
                  it != ops.end();
                  ++it) {
@@ -150,7 +149,7 @@ namespace mongo {
                     if( e.getCode() == 11000 || e.getCode() == 11001 || e.getCode() == 12582) {
                         return; // ignore
                     }
-                    error() << "writer worker caught exception: " << e.what() << " on: " << it->toString() << endl;
+                    error() << "exception: " << e.what() << " on: " << it->toString() << endl;
                     fassertFailed(16361);
                 }
             }
@@ -160,7 +159,7 @@ namespace mongo {
     // The pool threads call this to prefetch each op
     void replset::SyncTail::prefetchOp(const BSONObj& op) {
         if (!ClientBasic::getCurrent()) {
-            Client::initThread("prefetch worker");
+            Client::initThread("repl prefetch worker");
         }
         const char *ns = op.getStringField("ns");
         if (ns && (ns[0] != 0)) {
@@ -180,7 +179,8 @@ namespace mongo {
         prefetcherPool.join();
     }
     
-    void replset::SyncTail::applyOps(const std::vector< std::vector<BSONObj> >& writerVectors, multiSyncApplyFunc applyFunc) {
+    void replset::SyncTail::applyOps(const std::vector< std::vector<BSONObj> >& writerVectors, 
+                                     multiSyncApplyFunc applyFunc) {
         ThreadPool& writerPool = theReplSet->getWriterPool();
         for (std::vector< std::vector<BSONObj> >::const_iterator it = writerVectors.begin();
              it != writerVectors.end();
@@ -211,7 +211,8 @@ namespace mongo {
     }
 
 
-    void replset::SyncTail::fillWriterVectors(const std::deque<BSONObj>& ops, std::vector< std::vector<BSONObj> >* writerVectors) {
+    void replset::SyncTail::fillWriterVectors(const std::deque<BSONObj>& ops, 
+                                              std::vector< std::vector<BSONObj> >* writerVectors) {
         for (std::deque<BSONObj>::const_iterator it = ops.begin();
              it != ops.end();
              ++it) {
@@ -228,10 +229,8 @@ namespace mongo {
 
 
     /* initial oplog application, during initial sync, after cloning.
-       @return false on failure.
-       this method returns an error and doesn't throw exceptions (i think).
     */
-    bool replset::InitialSync::oplogApplication(const BSONObj& applyGTEObj, const BSONObj& minValidObj) {
+    void replset::InitialSync::oplogApplication(const BSONObj& applyGTEObj, const BSONObj& minValidObj) {
         OpTime applyGTE = applyGTEObj["ts"]._opTime();
         OpTime minValid = minValidObj["ts"]._opTime();
 
@@ -248,7 +247,7 @@ namespace mongo {
         // if there were no writes during the initial sync, there will be nothing in the queue so
         // just go live
         if (minValid == applyGTE) {
-            return true;
+            return;
         }
 
         OpTime ts;
@@ -257,37 +256,35 @@ namespace mongo {
         while( ts < minValid ) {
             deque<BSONObj> ops;
 
-            while (ops.size() < 128) {
-                if (!tryPopAndWaitForMore(&ops)) {
+            while (ops.size() < replBatchSize) {
+                if (tryPopAndWaitForMore(&ops)) {
                     break;
                 }
             }
 
             
-                multiApply(ops, multiInitSyncApply);
+            multiApply(ops, multiInitialSyncApply);
 
-                n += ops.size();
+            n += ops.size();
 
-                if ( n > lastN + 1000 ) {
-                    time_t now = time(0);
-                    if (now - start > 10) {
-                        // simple progress metering
-                        log() << "replSet initialSyncOplogApplication applied " << n << " operations, synced to "
-                              << ts.toStringPretty() << rsLog;
-                        start = now;
-                        lastN = n;
-                    }
+            if ( n > lastN + 1000 ) {
+                time_t now = time(0);
+                if (now - start > 10) {
+                    // simple progress metering
+                    log() << "replSet initialSyncOplogApplication applied " << n << " operations, synced to "
+                          << ts.toStringPretty() << rsLog;
+                    start = now;
+                    lastN = n;
                 }
+            }
 
-                // we want to keep a record of the last op applied, to compare with minvalid
-                const BSONObj& lastOp = ops[ops.size()-1];
-                OpTime tempTs = lastOp["ts"]._opTime();
-                clearOps(&ops);
+            // we want to keep a record of the last op applied, to compare with minvalid
+            const BSONObj& lastOp = ops[ops.size()-1];
+            OpTime tempTs = lastOp["ts"]._opTime();
+            clearOps(&ops);
 
-                ts = tempTs;
-            
+            ts = tempTs;
         }
-        return true;
     }
 
     /* should be in RECOVERING state on arrival here.
@@ -349,7 +346,7 @@ namespace mongo {
             // always fetch a few ops first
             tryPopAndWaitForMore(&ops);
 
-            while (ops.size() < 128) {
+            while (ops.size() < replBatchSize) {
                 // occasionally check some things
                 if (ops.empty() || time(0) - lastTimeChecked >= 1) {
                     lastTimeChecked = time(0);
@@ -377,7 +374,7 @@ namespace mongo {
                     }
                 }
 
-                if (!tryPopAndWaitForMore(&ops)) {
+                if (tryPopAndWaitForMore(&ops)) {
                     break;
                 }
             }
@@ -398,20 +395,28 @@ namespace mongo {
         }
     }
 
+    // Copies ops out of the bgsync queue into the deque passed in as a parameter.
+    // Returns true if the batch should be ended early.
+    // Batch should end early if we encounter a command, or if
+    // there are no further ops in the bgsync queue to read.
+    // This function also blocks 1 second waiting for new ops to appear in the bgsync
+    // queue.  We can't block forever because there are maintenance things we need
+    // to periodically check in the loop.
     bool replset::SyncTail::tryPopAndWaitForMore(std::deque<BSONObj>* ops) {
         BSONObj op;
+        // Check to see if there are ops waiting in the bgsync queue
         bool peek_success = peek(&op);
 
         if (!peek_success) {
-            // if we don't have anything in the queue, keep waiting on queue
+            // if we don't have anything in the queue, wait a bit for something to appear
             if (ops->empty()) {
-                // block a bit
-                _queue->blockingPeek();
-                return true;
+                // block 1 second
+                _queue->waitForMore();
+                return false;
             }
 
             // otherwise, apply what we have
-            return false;
+            return true;
         }
 
         // check for commands
@@ -423,12 +428,15 @@ namespace mongo {
             }
 
             // otherwise, apply what we have so far and come back for the command
-            return false;
+            return true;
         }
+
+        // Copy the op to the deque and remove it from the bgsync queue.
         ops->push_back(op);
         consume();
 
-        return true;
+        // Go back for more ops
+        return false;
     }
 
     void replset::SyncTail::clearOps(std::deque<BSONObj>* ops) {
