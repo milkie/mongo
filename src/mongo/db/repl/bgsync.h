@@ -123,13 +123,10 @@ namespace replset {
 
         // Interface implementation
 
-        // Gets the head of the buffer, but does not remove it. Returns a pointer to the list
-        // element.
         virtual bool peek(BSONObj* op);
         virtual void consume();
         virtual Member* getSyncTarget();
         virtual void waitForMore();
-
     };
 
 
