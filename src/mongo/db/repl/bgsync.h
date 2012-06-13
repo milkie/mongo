@@ -26,8 +26,7 @@
 namespace mongo {
 namespace replset {
 
-
-    // This interface's existance is to facilitate easier testing;
+    // This interface exists to facilitate easier testing;
     // the test infrastructure implements these functions with stubs.
     class BackgroundSyncInterface {
     public:
@@ -37,9 +36,6 @@ namespace replset {
         // Returns true if an element was present at the head;
         // false if the queue was empty.
         virtual bool peek(BSONObj* op) = 0;
-
-        // Waits up to one second for the queue to become non-empty.
-        virtual void waitForMore() = 0;
 
         // Deletes objects in the queue;
         // called by sync thread after it has applied an op
@@ -105,7 +101,8 @@ namespace replset {
         void stop();
         // restart syncing
         void start();
-
+        // wait up to 1 second for more ops to appear
+        void waitForMore();
 
         // Tracker thread
         // tells the sync target where this member is synced to
@@ -124,8 +121,10 @@ namespace replset {
         void notifierThread();
 
         // Interface implementation
+
+        // Gets the head of the buffer, but does not remove it. Returns a pointer to the list
+        // element.
         virtual bool peek(BSONObj* op);
-        virtual void waitForMore();
         virtual void consume();
         virtual Member* getSyncTarget();
     };

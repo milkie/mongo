@@ -378,7 +378,6 @@ namespace mongo {
                     break;
                 }
             }
-
             const BSONObj& lastOp = ops[ops.size()-1];
             handleSlaveDelay(lastOp);
 
@@ -418,7 +417,6 @@ namespace mongo {
             // otherwise, apply what we have
             return true;
         }
-
         // check for commands
         if (op["op"].valuestrsafe()[0] == 'c') {
             if (ops->empty()) {
