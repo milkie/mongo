@@ -132,6 +132,38 @@ namespace mongo {
         Reserved_FromWriteback = 1 << 1
     };
 
+    enum ReadPreference {
+        /**
+         * Read from primary only. All operations produce an error (throw an
+         * exception where applicable) if primary is unavailable. Cannot be
+         * combined with tags.
+         */
+        ReadPreference_PrimaryOnly = 0,
+
+        /**
+         * Read from primary if available, otherwise a secondary. Tags will
+         * only be applied in the event that the primary is unavailable and
+         * a secondary is read from. In this event only secondaries matching
+         * the tags provided would be read from.
+         */
+        ReadPreference_PrimaryPreferred,
+
+        /**
+         * Read from secondary if available, otherwise error.
+         */
+        ReadPreference_SecondaryOnly,
+
+        /**
+         * Read from a secondary if available, otherwise read from the primary.
+         */
+        ReadPreference_SecondaryPreferred,
+
+        /**
+         * Read from any member.
+         */
+        ReadPreference_Nearest,
+    };
+
     class DBClientBase;
 
     /**
@@ -473,7 +505,14 @@ namespace mongo {
 
         virtual void remove( const string &ns , Query query, bool justOne = 0 ) = 0;
 
-        virtual void update( const string &ns , Query query , BSONObj obj , bool upsert = 0 , bool multi = 0 ) = 0;
+        virtual void remove( const string &ns , Query query, int flags ) = 0;
+
+        virtual void update( const string &ns,
+                             Query query,
+                             BSONObj obj,
+                             bool upsert = false, bool multi = false ) = 0;
+
+        virtual void update( const string &ns, Query query, BSONObj obj, int flags ) = 0;
 
         virtual ~DBClientInterface() { }
 
@@ -605,15 +644,21 @@ namespace mongo {
         */
         bool resetError() { return simpleCommand("admin", 0, "reseterror"); }
 
-        /** Delete the specified collection. */
-        virtual bool dropCollection( const string &ns ) {
+        /** Delete the specified collection.
+         *  @param info An optional output parameter that receives the result object the database
+         *  returns from the drop command.  May be null if the caller doesn't need that info.
+         */
+        virtual bool dropCollection( const string &ns, BSONObj* info = NULL ) {
             string db = nsGetDB( ns );
             string coll = nsGetCollection( ns );
             uassert( 10011 ,  "no collection name", coll.size() );
 
-            BSONObj info;
+            BSONObj temp;
+            if ( info == NULL ) {
+                info = &temp;
+            }
 
-            bool res = runCommand( db.c_str() , BSON( "drop" << coll ) , info );
+            bool res = runCommand( db.c_str() , BSON( "drop" << coll ) , *info );
             resetIndexCache();
             return res;
         }
@@ -903,15 +948,22 @@ namespace mongo {
         virtual void insert( const string &ns, const vector< BSONObj >& v , int flags=0);
 
         /**
+           updates objects matching query
+         */
+        virtual void update( const string &ns,
+                             Query query,
+                             BSONObj obj,
+                             bool upsert = false, bool multi = false );
+
+        virtual void update( const string &ns, Query query, BSONObj obj, int flags );
+
+        /**
            remove matching objects from the database
            @param justOne if this true, then once a single match is found will stop
          */
         virtual void remove( const string &ns , Query q , bool justOne = 0 );
 
-        /**
-           updates objects matching query
-         */
-        virtual void update( const string &ns , Query query , BSONObj obj , bool upsert = false , bool multi = false );
+        virtual void remove( const string &ns , Query query, int flags );
 
         virtual bool isFailed() const = 0;
 

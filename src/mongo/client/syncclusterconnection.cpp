@@ -278,21 +278,21 @@ namespace mongo {
         uassert( 10023 , "SyncClusterConnection bulk insert not implemented" , 0);
     }
 
-    void SyncClusterConnection::remove( const string &ns , Query query, bool justOne ) {
+    void SyncClusterConnection::remove( const string &ns , Query query, int flags ) {
         string errmsg;
         if ( ! prepare( errmsg ) )
             throw UserException( 8020 , (string)"SyncClusterConnection::remove prepare failed: " + errmsg );
 
         for ( size_t i=0; i<_conns.size(); i++ ) {
-            _conns[i]->remove( ns , query , justOne );
+            _conns[i]->remove( ns , query , flags );
         }
 
         _checkLast();
     }
 
-    void SyncClusterConnection::update( const string &ns , Query query , BSONObj obj , bool upsert , bool multi ) {
+    void SyncClusterConnection::update( const string &ns , Query query , BSONObj obj , int flags ) {
 
-        if ( upsert ) {
+        if ( flags & UpdateOption_Upsert ) {
             uassert( 13120 , "SyncClusterConnection::update upsert query needs _id" , query.obj["_id"].type() );
         }
 
@@ -304,7 +304,7 @@ namespace mongo {
 
         for ( size_t i = 0; i < _conns.size(); i++ ) {
             try {
-                _conns[i]->update( ns , query , obj , upsert , multi );
+                _conns[i]->update( ns , query , obj , flags );
             }
             catch ( std::exception& e ) {
                 if ( _writeConcern )

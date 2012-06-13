@@ -626,32 +626,33 @@ namespace mongo {
      * Run a query with a cursor provided by the query optimizer, or FindingStartCursor.
      * @yields the db lock.
      */
-    const char *queryWithQueryOptimizer( const Message &m, int queryOptions, const char *ns,
-                                         const BSONObj &jsobj, CurOp& curop,
-                                         const BSONObj &query, const BSONObj &order,
-                                         const shared_ptr<ParsedQuery> &pq_shared,
-                                         const BSONObj &oldPlan,
-                                         const ConfigVersion &shardingVersionAtStart,
-                                         Message &result ) {
+    string queryWithQueryOptimizer( int queryOptions, const string& ns,
+                                    const BSONObj &jsobj, CurOp& curop,
+                                    const BSONObj &query, const BSONObj &order,
+                                    const shared_ptr<ParsedQuery> &pq_shared,
+                                    const BSONObj &oldPlan,
+                                    const ConfigVersion &shardingVersionAtStart,
+                                    scoped_ptr<PageFaultRetryableSection>& parentPageFaultSection,
+                                    scoped_ptr<NoPageFaultsAllowed>& noPageFault,
+                                    Message &result ) {
 
         const ParsedQuery &pq( *pq_shared );
         shared_ptr<Cursor> cursor;
         QueryPlanSummary queryPlan;
         
         if ( pq.hasOption( QueryOption_OplogReplay ) ) {
-            cursor = FindingStartCursor::getCursor( ns, query, order );
+            cursor = FindingStartCursor::getCursor( ns.c_str(), query, order );
         }
         else {
             cursor =
-            NamespaceDetailsTransient::getCursor( ns, query, order, QueryPlanSelectionPolicy::any(),
-                                                  0, pq_shared, false, &queryPlan );
+                NamespaceDetailsTransient::getCursor( ns.c_str(), query, order, QueryPlanSelectionPolicy::any(),
+                                                      0, pq_shared, false, &queryPlan );
         }
         verify( cursor );
         
         scoped_ptr<QueryResponseBuilder> queryResponseBuilder
                 ( QueryResponseBuilder::make( pq, cursor, queryPlan, oldPlan ) );
         bool saveClientCursor = false;
-        const char *exhaust = 0;
         OpTime slaveReadTill;
         ClientCursor::Holder ccPointer( new ClientCursor( QueryOption_NoCursorTimeout, cursor,
                                                          ns ) );
@@ -730,6 +731,9 @@ namespace mongo {
             // at this point
             throw SendStaleConfigException( ns , "version changed during initial query", shardingVersionAtStart, shardingState.getVersion( ns ) );
         }
+        
+        parentPageFaultSection.reset(0);
+        noPageFault.reset( new NoPageFaultsAllowed() );
 
         int nReturned = queryResponseBuilder->handoff( result );
 
@@ -759,7 +763,6 @@ namespace mongo {
             }
             
             if( queryOptions & QueryOption_Exhaust ) {
-                exhaust = ns;
                 curop.debug().exhaust = true;
             }
             
@@ -789,50 +792,80 @@ namespace mongo {
         }
         curop.debug().nreturned = nReturned;
 
-        return exhaust;
+        return curop.debug().exhaust ? ns : "";
     }
 
-    bool queryIdHack_locked( const char* ns, const BSONObj& query, const ParsedQuery& pq, CurOp& curop, Message& result ) {
-        int n = 0;
-        bool nsFound = false;
-        bool indexFound = false;
+    bool queryIdHack( const char* ns, const BSONObj& query, const ParsedQuery& pq, CurOp& curop, Message& result ) {
+        // notes:
+        //  do not touch result inside of PageFaultRetryableSection area
+
+        Client& currentClient = cc(); // only here since its safe and takes time
+        auto_ptr< QueryResult > qr;
         
-        BSONObj resObject;
-        Client& c = cc();
-        bool found = Helpers::findById( c, ns , query , resObject , &nsFound , &indexFound );
-        if ( nsFound && ! indexFound ) 
-            return false;
-        
-        if ( shardingState.needShardChunkManager( ns ) ) {
-            ShardChunkManagerPtr m = shardingState.getShardChunkManager( ns );
-            if ( m && ! m->belongsToMe( resObject ) ) {
-                // I have something this _id
-                // but it doesn't belong to me
-                // so return nothing
-                resObject = BSONObj();
-                found = false;
+        {
+            // this extra bracing is not strictly needed
+            // but makes it clear what the rules are in different spots
+ 
+            scoped_ptr<PageFaultRetryableSection> pgfs;
+            if ( ! currentClient.getPageFaultRetryableSection() )
+                pgfs.reset( new PageFaultRetryableSection() );
+            while ( 1 ) {
+                try {
+                    
+                    int n = 0;
+                    bool nsFound = false;
+                    bool indexFound = false;
+                    
+                    BSONObj resObject; // put inside since we don't own the memory
+                    
+                    Client::ReadContext ctx( ns , dbpath ); // read locks
+                    replVerifyReadsOk(&pq);
+                    
+                    bool found = Helpers::findById( currentClient, ns, query, resObject, &nsFound, &indexFound );
+                    if ( nsFound && ! indexFound ) {
+                        // we have to resort to a table scan
+                        return false;
+                    }
+                    
+                    if ( shardingState.needShardChunkManager( ns ) ) {
+                        ShardChunkManagerPtr m = shardingState.getShardChunkManager( ns );
+                        if ( m && ! m->belongsToMe( resObject ) ) {
+                            // I have something this _id
+                            // but it doesn't belong to me
+                            // so return nothing
+                            resObject = BSONObj();
+                            found = false;
+                        }
+                    }
+                    
+                    BufBuilder bb(sizeof(QueryResult)+resObject.objsize()+32);
+                    bb.skip(sizeof(QueryResult));
+                    
+                    curop.debug().idhack = true;
+                    if ( found ) {
+                        n = 1;
+                        fillQueryResultFromObj( bb , pq.getFields() , resObject );
+                    }
+                    
+                    qr.reset( (QueryResult *) bb.buf() );
+                    bb.decouple();
+                    qr->setResultFlagsToOk();
+                    qr->len = bb.len();
+                    
+                    curop.debug().responseLength = bb.len();
+                    qr->setOperation(opReply);
+                    qr->cursorId = 0;
+                    qr->startingFrom = 0;
+                    qr->nReturned = n;
+                    
+                    break;
+                }
+                catch ( PageFaultException& e ) {
+                    e.touch();
+                }
             }
         }
-        
-        BufBuilder bb(sizeof(QueryResult)+resObject.objsize()+32);
-        bb.skip(sizeof(QueryResult));
-        
-        curop.debug().idhack = true;
-        if ( found ) {
-            n = 1;
-            fillQueryResultFromObj( bb , pq.getFields() , resObject );
-        }
-        auto_ptr< QueryResult > qr;
-        qr.reset( (QueryResult *) bb.buf() );
-        bb.decouple();
-        qr->setResultFlagsToOk();
-        qr->len = bb.len();
-        
-        curop.debug().responseLength = bb.len();
-        qr->setOperation(opReply);
-        qr->cursorId = 0;
-        qr->startingFrom = 0;
-        qr->nReturned = n;
+
         result.setData( qr.release(), true );
         return true;
     }
@@ -844,7 +877,7 @@ namespace mongo {
      * @yields the db mutex periodically after acquiring it.
      * @asserts on scan and order memory exhaustion and other cases.
      */
-    const char *runQuery(Message& m, QueryMessage& q, CurOp& curop, Message &result) {
+    string runQuery(Message& m, QueryMessage& q, CurOp& curop, Message &result) {
         shared_ptr<ParsedQuery> pq_shared( new ParsedQuery(q) );
         ParsedQuery& pq( *pq_shared );
         BSONObj jsobj = q.query;
@@ -890,7 +923,7 @@ namespace mongo {
             else {
                 uasserted(13530, "bad or malformed command request?");
             }
-            return 0;
+            return "";
         }
 
         bool explain = pq.isExplain();
@@ -908,11 +941,30 @@ namespace mongo {
             uassert( 10110 , "bad query object", false);
         }
 
+
+        // Run a simple id query.
+        if ( ! (explain || pq.showDiskLoc()) && isSimpleIdQuery( query ) && !pq.hasOption( QueryOption_CursorTailable ) ) {
+            if ( queryIdHack( ns, query, pq, curop, result ) ) {
+                return "";
+            }
+        }
+        
+        // these now may stored in a ClientCursor or somewhere else,
+        // so make sure we use a real copy
+        jsobj = jsobj.getOwned();
+        query = query.getOwned();
+        order = order.getOwned();
+
         bool hasRetried = false;
         scoped_ptr<PageFaultRetryableSection> pgfs;
-        if ( ! cc().getPageFaultRetryableSection() )
-            pgfs.reset( new PageFaultRetryableSection() );
+        scoped_ptr<NoPageFaultsAllowed> npfe;
         while ( 1 ) {
+
+            if ( ! cc().getPageFaultRetryableSection() ) {
+                verify( ! pgfs );
+                pgfs.reset( new PageFaultRetryableSection() );
+            }
+                
             try {
                 Client::ReadContext ctx( ns , dbpath ); // read locks
                 const ConfigVersion shardingVersionAtStart = shardingState.getVersion( ns );
@@ -931,27 +983,19 @@ namespace mongo {
                     }
                 }
                 
-                // Run a simple id query.
-                
-                if ( ! (explain || pq.showDiskLoc()) && isSimpleIdQuery( query ) && !pq.hasOption( QueryOption_CursorTailable ) ) {
-                    if ( queryIdHack_locked( ns, query, pq, curop, result ) ) {
-                        return NULL;
-                    }
-                }
                 
                 // Run a regular query.
                 
                 BSONObj oldPlan;
-                if ( explain && ! pq.hasIndexSpecifier() ) {
+                if ( ! hasRetried && explain && ! pq.hasIndexSpecifier() ) {
                     scoped_ptr<MultiPlanScanner> mps( MultiPlanScanner::make( ns, query, order ) );
                     oldPlan = mps->cachedPlanExplainSummary();
                 }
              
-                jsobj = jsobj.getOwned();
-                order = order.getOwned();
    
-                return queryWithQueryOptimizer( m, queryOptions, ns, jsobj, curop, query, order,
-                                                pq_shared, oldPlan, shardingVersionAtStart, result );
+                return queryWithQueryOptimizer( queryOptions, ns, jsobj, curop, query, order,
+                                                pq_shared, oldPlan, shardingVersionAtStart, 
+                                                pgfs, npfe, result );
             }
             catch ( PageFaultException& e ) {
                 e.touch();

@@ -884,16 +884,23 @@ namespace mongo {
     }
 
     void DBClientBase::remove( const string & ns , Query obj , bool justOne ) {
+        int flags = 0;
+        if( justOne ) flags |= RemoveOption_JustOne;
+        remove( ns, obj, flags );
+    }
+
+    void DBClientBase::remove( const string & ns , Query obj , int flags ) {
         Message toSend;
 
         BufBuilder b;
-        int opts = 0;
-        b.appendNum( opts );
-        b.appendStr( ns );
+        int reservedFlags = 0;
+        if( flags & WriteOption_FromWriteback ){
+            reservedFlags |= WriteOption_FromWriteback;
+            flags ^= WriteOption_FromWriteback;
+        }
 
-        int flags = 0;
-        if ( justOne )
-            flags |= RemoveOption_JustOne;
+        b.appendNum( reservedFlags );
+        b.appendStr( ns );
         b.appendNum( flags );
 
         obj.obj.appendSelfToBufBuilder( b );
@@ -903,15 +910,25 @@ namespace mongo {
         say( toSend );
     }
 
-    void DBClientBase::update( const string & ns , Query query , BSONObj obj , bool upsert , bool multi ) {
-
-        BufBuilder b;
-        b.appendNum( (int)0 ); // reserved
-        b.appendStr( ns );
-
+    void DBClientBase::update( const string & ns , Query query , BSONObj obj , bool upsert, bool multi ) {
         int flags = 0;
         if ( upsert ) flags |= UpdateOption_Upsert;
         if ( multi ) flags |= UpdateOption_Multi;
+        update( ns, query, obj, flags );
+    }
+
+    void DBClientBase::update( const string & ns , Query query , BSONObj obj , int flags ) {
+
+        BufBuilder b;
+
+        int reservedFlags = 0;
+        if( flags & WriteOption_FromWriteback ){
+            reservedFlags |= Reserved_FromWriteback;
+            flags ^= WriteOption_FromWriteback;
+        }
+
+        b.appendNum( reservedFlags ); // reserved
+        b.appendStr( ns );
         b.appendNum( flags );
 
         query.obj.appendSelfToBufBuilder( b );
@@ -921,10 +938,7 @@ namespace mongo {
         toSend.setData( dbUpdate , b.buf() , b.len() );
 
         say( toSend );
-
-
     }
-
 
     
     auto_ptr<DBClientCursor> DBClientWithCommands::getIndexes( const string &ns ) {

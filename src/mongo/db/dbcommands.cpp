@@ -466,15 +466,9 @@ namespace mongo {
 
             {
                 BSONObjBuilder t;
-
-                unsigned long long last, start, timeLocked;
-                d.dbMutex.info().getTimingInfo(start, timeLocked);
-                last = curTimeMicros64();
-                double tt = (double) last-start;
-                double tl = (double) timeLocked;
-                t.append("totalTime", tt);
-                t.append("lockTime", tl);
-                t.append("ratio", (tt ? tl/tt : 0));
+                
+                t.append( "totalTime" , (long long)(1000 * ( curTimeMillis64() - _started ) ) );
+                t.append( "lockTime" , Lock::globalLockStat()->getTimeLocked( 'W' ) );
 
                 {
                     BSONObjBuilder ttt( t.subobjStart( "currentQueue" ) );
@@ -623,6 +617,21 @@ namespace mongo {
             {
                 BSONObjBuilder record( result.subobjStart( "recordStats" ) );
                 Record::appendStats( record );
+
+                set<string> dbs;
+                {
+                    Lock::DBRead read( "local" );
+                    dbHolder().getAllShortNames( dbs );
+                }
+
+                for ( set<string>::iterator i = dbs.begin(); i != dbs.end(); ++i ) {
+                    string db = *i;
+                    Client::ReadContext ctx( db );
+                    BSONObjBuilder temp( record.subobjStart( db ) );
+                    ctx.ctx().db()->recordStats().record( temp );
+                    temp.done();
+                }
+
                 record.done();
             }
 
