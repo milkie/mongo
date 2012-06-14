@@ -257,9 +257,6 @@ namespace ReplSetTests {
             std::vector<BSONObj> ops;
             ops.push_back(obj);
 
-            // This now aborts the database
-            //ASSERT_THROWS(multiInitSyncApply(oppkg), UserException);
-
             sync2.insertOnRetry = true;
             // succeeds
             multiInitialSyncApply(ops, &sync2);
@@ -403,7 +400,7 @@ namespace ReplSetTests {
             }
 
             // this changed in 2.1.2
-            // we know have indexes on capped collections
+            // we now have indexes on capped collections
             Client::Context ctx(cappedNs());
             NamespaceDetails *nsd = nsdetails(cappedNs().c_str());
             verify(nsd->findIdIndex() >= 0);
@@ -490,13 +487,6 @@ namespace ReplSetTests {
             ASSERT_EQUALS(1334810820, obj["requests"]["100002_1"]["timestamp"].number());
 
             drop();
-            // test dup key error
-            //drop();
-            //addUniqueIndex();
-            //applyOplog();
-
-            //ASSERT_EQUALS(1, static_cast<int>(client()->count(ns())));
-            //ASSERT(_bgsync->peek() != NULL);
         }
     };
 

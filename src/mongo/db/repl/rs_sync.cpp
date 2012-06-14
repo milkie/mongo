@@ -46,9 +46,7 @@ namespace mongo {
         return _queue->peek(op);
     }
 
-    void replset::SyncTail::consume() {
-        _queue->consume();
-    }
+
 
     replset::InitialSync::InitialSync(BackgroundSyncInterface *q) : 
         SyncTail(q) {}
@@ -281,7 +279,7 @@ namespace mongo {
             // we want to keep a record of the last op applied, to compare with minvalid
             const BSONObj& lastOp = ops[ops.size()-1];
             OpTime tempTs = lastOp["ts"]._opTime();
-            clearOps(&ops);
+            applyOpsToOplog(&ops);
 
             ts = tempTs;
         }
@@ -390,7 +388,7 @@ namespace mongo {
             }
             multiApply(ops, multiSyncApply);
 
-            clearOps(&ops);
+            applyOpsToOplog(&ops);
         }
     }
 
@@ -422,7 +420,7 @@ namespace mongo {
             if (ops->empty()) {
                 // apply commands one-at-a-time
                 ops->push_back(op);
-                consume();
+                _queue->consume();
             }
 
             // otherwise, apply what we have so far and come back for the command
@@ -431,13 +429,13 @@ namespace mongo {
 
         // Copy the op to the deque and remove it from the bgsync queue.
         ops->push_back(op);
-        consume();
+        _queue->consume();
 
         // Go back for more ops
         return false;
     }
 
-    void replset::SyncTail::clearOps(std::deque<BSONObj>* ops) {
+    void replset::SyncTail::applyOpsToOplog(std::deque<BSONObj>* ops) {
         {
             Lock::DBWrite lk("local");
             while (!ops->empty()) {
@@ -448,7 +446,7 @@ namespace mongo {
              }
         }
 
-        // let w catch up
+        // Update w on primary
         BackgroundSync::notify();
     }
 
