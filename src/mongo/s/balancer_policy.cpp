@@ -24,25 +24,19 @@
 
 namespace mongo {
 
-    BalancerPolicy::MigrateInfo* BalancerPolicy::balance( const string& ns,
-                                                          const ShardInfoMap& shardToLimitsMap,
-                                                          const ShardToChunksMap& shardToChunksMap,
-                                                          int balancedLastTime ) {
+    DistributionStatus::DistributionStatus( const ShardInfoMap& shardInfo,
+                                            const ShardToChunksMap& shardToChunksMap )
+        : _shardInfo( shardInfo ), _shardChunks( shardToChunksMap ) {
+    }
         
-        log() << "---- ShardInfoMap" << endl;
-        for ( ShardInfoMap::const_iterator i = shardToLimitsMap.begin(); i != shardToLimitsMap.end(); ++i ) {
-            log() << "\t" << i->first << "\t" << i->second << endl;
-        }
-        log() << "---- ShardToChunksMap" << endl;
-        for ( ShardToChunksMap::const_iterator i=shardToChunksMap.begin(); i != shardToChunksMap.end(); ++i ) {
-            log() << "\t" << i->first << endl;
-            const vector<BSONObj>& v = i->second;
-            for ( unsigned j=0; j<v.size(); j++ ) {
-                log() << "\t\t" << v[j] << endl;
-            }
-        }
-        log() << "----" << endl;
+
+
+    MigrateInfo* BalancerPolicy::balance( const string& ns,
+                                          const DistributionStatus& distribution, 
+                                          int balancedLastTime ) {
         
+        const ShardInfoMap& shardToLimitsMap = distribution.shardInfo();
+        const ShardToChunksMap& shardToChunksMap = distribution.shardChunks();
 
         pair<string,unsigned> min("",numeric_limits<unsigned>::max());
         pair<string,unsigned> max("",0);
@@ -138,7 +132,7 @@ namespace mongo {
         BSONObj chunkToMove = pickChunk( chunksFrom , chunksTo );
         log() << "chose [" << from << "] to [" << to << "] " << chunkToMove << endl;
 
-        return new MigrateInfo( ns, to, from, chunkToMove );
+        return new MigrateInfo( ns, to, from, chunkToMove.getOwned() );
     }
 
     BSONObj BalancerPolicy::pickChunk( const vector<BSONObj>& from, const vector<BSONObj>& to ) {
@@ -157,28 +151,28 @@ namespace mongo {
         return from[0];
     }
 
-    BalancerPolicy::ShardInfo::ShardInfo( long long maxSize, long long currSize, bool draining, bool opsQueued )
+    ShardInfo::ShardInfo( long long maxSize, long long currSize, bool draining, bool opsQueued )
         : _maxSize( maxSize ), 
           _currSize( currSize ),
           _draining( draining ),
           _hasOpsQueued( opsQueued ) {
     }
 
-    BalancerPolicy::ShardInfo::ShardInfo()
+    ShardInfo::ShardInfo()
         : _maxSize( 0 ), 
           _currSize( 0 ),
           _draining( false ),
           _hasOpsQueued( false ) {
     }
 
-    bool BalancerPolicy::ShardInfo::isSizeMaxed() const {
+    bool ShardInfo::isSizeMaxed() const {
         if ( _maxSize == 0 || _currSize == 0 )
             return false;
         
         return _currSize >= _maxSize;
     }
 
-    string BalancerPolicy::ShardInfo::toString() const {
+    string ShardInfo::toString() const {
         StringBuilder ss;
         ss << " maxSize: " << _maxSize;
         ss << " currSize: " << _currSize;
@@ -187,7 +181,7 @@ namespace mongo {
         return ss.str();
     }
 
-    string BalancerPolicy::ChunkInfo::toString() const {
+    string ChunkInfo::toString() const {
         StringBuilder buf;
         buf << " min: " << min;
         buf << " max: " << min;
