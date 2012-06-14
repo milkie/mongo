@@ -67,7 +67,7 @@ namespace mongo {
             // this is often a no-op
             // but can't be 100% sure
             if( *op.getStringField("op") != 'n' ) {
-                log() << "replSet skipping bad op in oplog: " << op.toString() << rsLog;
+                error() << "replSet skipping bad op in oplog: " << op.toString() << rsLog;
             }
             return true;
         }
@@ -198,7 +198,7 @@ namespace mongo {
         
         std::vector< std::vector<BSONObj> > writerVectors(theReplSet->replWriterThreadCount);
         fillWriterVectors(ops, &writerVectors);
-
+        LOG(1) << "replication batch size is " << ops.size() << endl;
         // We must grab this because we're going to grab write locks later.
         // We hold this mutex the entire time we're writing; it doesn't matter
         // because all readers are blocked anyway.
