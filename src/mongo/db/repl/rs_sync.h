@@ -39,7 +39,7 @@ namespace replset {
         SyncTail(BackgroundSyncInterface *q);
         virtual bool syncApply(const BSONObj &o);
         void oplogApplication();
-        bool peek(BSONObj* op);
+        bool peek(BSONObj* obj);
         void consume();
 
         // returns true if we should continue waiting for BSONObjs, false if we should

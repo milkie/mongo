@@ -509,7 +509,7 @@ namespace mongo {
 
         // keep a list of hosts that we've tried recently that didn't work
         map<string,time_t> _veto;
-        // persistent pool of worker threads for syncing
+        // persistent pool of worker threads for writing ops to the databases
         threadpool::ThreadPool _writerPool;
         // persistent pool of worker threads for prefetching
         threadpool::ThreadPool _prefetcherPool;
