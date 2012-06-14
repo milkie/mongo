@@ -35,8 +35,8 @@ namespace replset {
     class SyncTail : public Sync {
         typedef void (*multiSyncApplyFunc)(const std::vector<BSONObj>& ops, SyncTail* st);
     public:
-        virtual ~SyncTail();
         SyncTail(BackgroundSyncInterface *q);
+        virtual ~SyncTail();
         virtual bool syncApply(const BSONObj &o);
         void oplogApplication();
         bool peek(BSONObj* obj);
@@ -57,10 +57,16 @@ namespace replset {
         void multiApply(std::deque<BSONObj>& ops, multiSyncApplyFunc applyFunc);
     private:
         BackgroundSyncInterface* _queue;
+
+        // Doles out all the work to the reader pool threads and waits for them to complete
         void prefetchOps(const std::deque<BSONObj>& ops);
+        // Used by the thread pool readers to prefetch an op
         static void prefetchOp(const BSONObj& op);
+
+        // Doles out all the work to the writer pool threads and waits for them to complete
         void applyOps(const std::vector< std::vector<BSONObj> >& writerVectors, 
                       multiSyncApplyFunc applyFunc);
+
         void fillWriterVectors(const std::deque<BSONObj>& ops, 
                                std::vector< std::vector<BSONObj> >* writerVectors);
         void handleSlaveDelay(const BSONObj& op);

@@ -36,27 +36,21 @@ namespace mongo {
     using namespace bson;
     extern unsigned replSetForceInitialSyncFailure;
 
-    replset::SyncTail::SyncTail(BackgroundSyncInterface *q) :
+namespace replset {
+
+    SyncTail::SyncTail(BackgroundSyncInterface *q) :
         Sync(""), _queue(q)
     {}
 
-    replset::SyncTail::~SyncTail() {}
+    SyncTail::~SyncTail() {}
 
-    bool replset::SyncTail::peek(BSONObj* op) {
+    bool SyncTail::peek(BSONObj* op) {
         return _queue->peek(op);
     }
-
-
-
-    replset::InitialSync::InitialSync(BackgroundSyncInterface *q) : 
-        SyncTail(q) {}
-
-    replset::InitialSync::~InitialSync() {}
-
     /* apply the log op that is in param o
        @return bool success (true) or failure (false)
     */
-    bool replset::SyncTail::syncApply(const BSONObj &op) {
+    bool SyncTail::syncApply(const BSONObj &op) {
         const char *ns = op.getStringField("ns");
         verify(ns);
 
@@ -99,7 +93,7 @@ namespace mongo {
         return ok;
     }
 
-    namespace replset {
+
         void initializeWriterThread() {
             // Only do this once per thread
             if (!ClientBasic::getCurrent()) {
@@ -152,10 +146,10 @@ namespace mongo {
                 }
             }
         }
-    } // namespace replset
+
 
     // The pool threads call this to prefetch each op
-    void replset::SyncTail::prefetchOp(const BSONObj& op) {
+    void SyncTail::prefetchOp(const BSONObj& op) {
         if (!ClientBasic::getCurrent()) {
             Client::initThread("repl prefetch worker");
         }
@@ -167,7 +161,7 @@ namespace mongo {
     }
 
     // Doles out all the work to the reader pool threads and waits for them to complete
-    void replset::SyncTail::prefetchOps(const std::deque<BSONObj>& ops) {
+    void SyncTail::prefetchOps(const std::deque<BSONObj>& ops) {
         threadpool::ThreadPool& prefetcherPool = theReplSet->getPrefetchPool();
         for (std::deque<BSONObj>::const_iterator it = ops.begin();
              it != ops.end();
@@ -177,7 +171,8 @@ namespace mongo {
         prefetcherPool.join();
     }
     
-    void replset::SyncTail::applyOps(const std::vector< std::vector<BSONObj> >& writerVectors, 
+    // Doles out all the work to the writer pool threads and waits for them to complete
+    void SyncTail::applyOps(const std::vector< std::vector<BSONObj> >& writerVectors, 
                                      multiSyncApplyFunc applyFunc) {
         ThreadPool& writerPool = theReplSet->getWriterPool();
         for (std::vector< std::vector<BSONObj> >::const_iterator it = writerVectors.begin();
@@ -189,7 +184,7 @@ namespace mongo {
     }
 
     // Doles out all the work to the writer pool threads and waits for them to complete
-    void replset::SyncTail::multiApply( std::deque<BSONObj>& ops, multiSyncApplyFunc applyFunc ) {
+    void SyncTail::multiApply( std::deque<BSONObj>& ops, multiSyncApplyFunc applyFunc ) {
 
         // Use a ThreadPool to prefetch all the operations in a batch.
         prefetchOps(ops);
@@ -209,7 +204,7 @@ namespace mongo {
     }
 
 
-    void replset::SyncTail::fillWriterVectors(const std::deque<BSONObj>& ops, 
+    void SyncTail::fillWriterVectors(const std::deque<BSONObj>& ops, 
                                               std::vector< std::vector<BSONObj> >* writerVectors) {
         for (std::deque<BSONObj>::const_iterator it = ops.begin();
              it != ops.end();
@@ -226,9 +221,15 @@ namespace mongo {
     }
 
 
+    InitialSync::InitialSync(BackgroundSyncInterface *q) : 
+        SyncTail(q) {}
+
+    InitialSync::~InitialSync() {}
+
+
     /* initial oplog application, during initial sync, after cloning.
     */
-    void replset::InitialSync::oplogApplication(const BSONObj& applyGTEObj, const BSONObj& minValidObj) {
+    void InitialSync::oplogApplication(const BSONObj& applyGTEObj, const BSONObj& minValidObj) {
         OpTime applyGTE = applyGTEObj["ts"]._opTime();
         OpTime minValid = minValidObj["ts"]._opTime();
 
@@ -285,56 +286,8 @@ namespace mongo {
         }
     }
 
-    /* should be in RECOVERING state on arrival here.
-       readlocks
-       @return true if transitioned to SECONDARY
-    */
-    bool ReplSetImpl::tryToGoLiveAsASecondary(OpTime& /*out*/ minvalid) {
-        bool golive = false;
-
-        // make sure we're not primary or secondary already
-        if (box.getState().primary() || box.getState().secondary()) {
-            return false;
-        }
-
-        {
-            lock lk( this );
-
-            if (_maintenanceMode > 0) {
-                // we're not actually going live
-                return true;
-            }
-
-            // if we're blocking sync, don't change state
-            if (_blockSync) {
-                return false;
-            }
-        }
-
-        {
-            Lock::DBRead lk("local.replset.minvalid");
-            BSONObj mv;
-            if( Helpers::getSingleton("local.replset.minvalid", mv) ) {
-                minvalid = mv["ts"]._opTime();
-                if( minvalid <= lastOpTimeWritten ) {
-                    golive=true;
-                }
-                else {
-                    sethbmsg(str::stream() << "still syncing, not yet to minValid optime " << minvalid.toString());
-                }
-            }
-            else
-                golive = true; /* must have been the original member */
-        }
-        if( golive ) {
-            sethbmsg("");
-            changeState(MemberState::RS_SECONDARY);
-        }
-        return golive;
-    }
-
     /* tail an oplog.  ok to return, will be re-called. */
-    void replset::SyncTail::oplogApplication() {
+    void SyncTail::oplogApplication() {
         while( 1 ) {
             deque<BSONObj> ops;
             time_t lastTimeChecked = time(0);
@@ -399,7 +352,7 @@ namespace mongo {
     // This function also blocks 1 second waiting for new ops to appear in the bgsync
     // queue.  We can't block forever because there are maintenance things we need
     // to periodically check in the loop.
-    bool replset::SyncTail::tryPopAndWaitForMore(std::deque<BSONObj>* ops) {
+    bool SyncTail::tryPopAndWaitForMore(std::deque<BSONObj>* ops) {
         BSONObj op;
         // Check to see if there are ops waiting in the bgsync queue
         bool peek_success = peek(&op);
@@ -435,7 +388,7 @@ namespace mongo {
         return false;
     }
 
-    void replset::SyncTail::applyOpsToOplog(std::deque<BSONObj>* ops) {
+    void SyncTail::applyOpsToOplog(std::deque<BSONObj>* ops) {
         {
             Lock::DBWrite lk("local");
             while (!ops->empty()) {
@@ -450,7 +403,7 @@ namespace mongo {
         BackgroundSync::notify();
     }
 
-    void replset::SyncTail::handleSlaveDelay(const BSONObj& lastOp) {
+    void SyncTail::handleSlaveDelay(const BSONObj& lastOp) {
         int sd = theReplSet->myConfig().slaveDelay;
 
         // ignore slaveDelay if the box is still initializing. once
@@ -481,6 +434,56 @@ namespace mongo {
                 }
             }
         } // endif slaveDelay
+    }
+
+} // namespace replset
+
+    /* should be in RECOVERING state on arrival here.
+       readlocks
+       @return true if transitioned to SECONDARY
+    */
+    bool ReplSetImpl::tryToGoLiveAsASecondary(OpTime& /*out*/ minvalid) {
+        bool golive = false;
+
+        // make sure we're not primary or secondary already
+        if (box.getState().primary() || box.getState().secondary()) {
+            return false;
+        }
+
+        {
+            lock lk( this );
+
+            if (_maintenanceMode > 0) {
+                // we're not actually going live
+                return true;
+            }
+
+            // if we're blocking sync, don't change state
+            if (_blockSync) {
+                return false;
+            }
+        }
+
+        {
+            Lock::DBRead lk("local.replset.minvalid");
+            BSONObj mv;
+            if( Helpers::getSingleton("local.replset.minvalid", mv) ) {
+                minvalid = mv["ts"]._opTime();
+                if( minvalid <= lastOpTimeWritten ) {
+                    golive=true;
+                }
+                else {
+                    sethbmsg(str::stream() << "still syncing, not yet to minValid optime " << minvalid.toString());
+                }
+            }
+            else
+                golive = true; /* must have been the original member */
+        }
+        if( golive ) {
+            sethbmsg("");
+            changeState(MemberState::RS_SECONDARY);
+        }
+        return golive;
     }
 
 
