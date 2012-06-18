@@ -1552,7 +1552,8 @@ namespace mongo {
             uassert(13435, "not master and slaveOk=false",
                     !pq || pq->hasOption(QueryOption_SlaveOk));
             uassert(13436,
-                    "not master or secondary; cannot currently read from this replSet member",
+                    string("not master or secondary; cannot currently read from this replSet member; state:") + 
+                    (theReplSet->state()).toString(),
                     theReplSet && theReplSet->isSecondary() );
         }
         else {
