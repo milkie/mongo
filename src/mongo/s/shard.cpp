@@ -64,7 +64,7 @@ namespace mongo {
                 _lookup.clear();
             }
             _rsLookup.clear();
-
+            
             for ( list<BSONObj>::iterator i=all.begin(); i!=all.end(); ++i ) {
                 BSONObj o = *i;
                 string name = o["_id"].String();
@@ -83,6 +83,14 @@ namespace mongo {
                 }
 
                 ShardPtr s( new Shard( name , host , maxSize , isDraining ) );
+
+                if ( o["tags"].type() == Array ) {
+                    vector<BSONElement> v = o["tags"].Array();
+                    for ( unsigned j=0; j<v.size(); j++ ) {
+                        s->addTag( v[j].String() );
+                    }
+                }
+
                 _lookup[name] = s;
                 _installHost( host , s );
             }
@@ -310,9 +318,14 @@ namespace mongo {
         out.flush();
     }
 
-    BSONObj Shard::runCommand( const string& db , const BSONObj& cmd ) const {
-        scoped_ptr<ScopedDbConnection> conn(
-                ScopedDbConnection::getScopedDbConnection( getConnString() ) );
+    BSONObj Shard::runCommand( const string& db , const BSONObj& cmd , bool internal ) const {
+        scoped_ptr<ScopedDbConnection> conn;
+
+        if ( internal ) {
+            conn.reset( ScopedDbConnection::getInternalScopedDbConnection( getConnString() ) );
+        } else {
+            conn.reset( ScopedDbConnection::getScopedDbConnection( getConnString() ) );
+        }
         BSONObj res;
         bool ok = conn->get()->runCommand( db , cmd , res );
         if ( ! ok ) {
@@ -327,7 +340,7 @@ namespace mongo {
     }
 
     ShardStatus Shard::getStatus() const {
-        return ShardStatus( *this , runCommand( "admin" , BSON( "serverStatus" << 1 ) ) );
+        return ShardStatus( *this , runCommand( "admin" , BSON( "serverStatus" << 1 ) , true ) );
     }
 
     void Shard::reloadShardInfo() {

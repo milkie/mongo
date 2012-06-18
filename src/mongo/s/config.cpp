@@ -41,6 +41,7 @@ namespace mongo {
     string ShardNS::database = "config.databases";
     string ShardNS::collection = "config.collections";
     string ShardNS::chunk = "config.chunks";
+    string ShardNS::tags = "config.tags";
 
     string ShardNS::mongos = "config.mongos";
     string ShardNS::settings = "config.settings";
@@ -547,7 +548,7 @@ namespace mongo {
         // object around which has invalid data.  We should remove it instead.
         //
 
-        if( ! successful ) grid.removeDB( *this );
+        if( ! successful ) grid.removeDBIfExists( *this );
 
         return successful;
     }

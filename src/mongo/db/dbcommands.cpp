@@ -761,7 +761,8 @@ namespace mongo {
         virtual bool run(const string& dbname, BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool) {
             string ns = parseNs(dbname, cmdObj);
             string err;
-            long long n = runCount(ns.c_str(), cmdObj, err);
+            int errCode;
+            long long n = runCount(ns.c_str(), cmdObj, err, errCode);
             long long nn = n;
             bool ok = true;
             if ( n == -1 ) {
@@ -771,8 +772,10 @@ namespace mongo {
             else if ( n < 0 ) {
                 nn = 0;
                 ok = false;
-                if ( !err.empty() )
+                if ( !err.empty() ) {
                     errmsg = err;
+                    return false;
+                }
             }
             result.append("n", (double) nn);
             return ok;
@@ -1842,6 +1845,27 @@ namespace mongo {
         string dbname = nsToDatabase( cmdns );
 
         AuthenticationInfo *ai = client.getAuthenticationInfo();
+        // Won't clear the temporary auth if it's already set at this point
+        AuthenticationInfo::TemporaryAuthReleaser authRelease( ai );
+
+        // Some commands run other commands using the DBDirectClient. When this happens,the inner
+        // command doesn't get $auth added to the command object, but the temporary authorization
+        // for that thread is already set.  Therefore, we shouldn't error if no $auth is provided
+        // but we already have temporary auth credentials set.
+        if ( ai->usingInternalUser() && !ai->hasTemporaryAuthorization() ) {
+            // The temporary authentication will be cleared when authRelease goes out of scope
+            if ( cmdObj.hasField("$auth") ) {
+                BSONObj authObj = cmdObj["$auth"].Obj();
+                ai->setTemporaryAuthorization( authObj );
+            } else {
+                result.append( "errmsg" ,
+                               "unauthorized: no auth credentials provided for command and "
+                               "authenticated using internal user.  This is most likely because "
+                               "you are using an old version of mongos" );
+                log() << "command denied: " << cmdObj.toString() << endl;
+                return false;
+            }
+        }
 
         if( c->adminOnly() && c->localHostOnlyIfNoAuth( cmdObj ) && noauth && !ai->isLocalHost() ) {
             result.append( "errmsg" ,

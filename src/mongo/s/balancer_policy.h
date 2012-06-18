@@ -37,11 +37,30 @@ namespace mongo {
         
         string toString() const;
     };
+
+    struct TagRange {
+        BSONObj min;
+        BSONObj max;
+        string tag;
+        
+        TagRange(){}
+
+        TagRange( const BSONObj& a_min, const BSONObj& a_max, const string& a_tag ) 
+            : min( a_min.getOwned() ), max( a_max.getOwned() ), tag( a_tag ){}
+        string toString() const;
+    };
     
     class ShardInfo {
     public:
         ShardInfo();
-        ShardInfo( long long maxSize, long long currSize, bool draining, bool opsQueued );
+        ShardInfo( long long maxSize, long long currSize, 
+                   bool draining, bool opsQueued, 
+                   const set<string>& tags = set<string>() );
+
+        void addTag( const string& tag );
+
+        /** @return true if we have the tag OR if the tag is "" */
+        bool hasTag( const string& tag ) const;
         
         /**
          * @return true if a shard cannot receive any new chunks bacause it reache 'shardLimits'.
@@ -68,6 +87,7 @@ namespace mongo {
         long long _currSize;
         bool _draining;
         bool _hasOpsQueued;
+        set<string> _tags;
     };
     
     struct MigrateInfo {
@@ -85,19 +105,68 @@ namespace mongo {
     typedef map< string,ShardInfo > ShardInfoMap;
     typedef map< string,vector<BSONObj> > ShardToChunksMap;
 
-    class DistributionStatus {
+    class DistributionStatus : boost::noncopyable {
     public:
         DistributionStatus( const ShardInfoMap& shardInfo,
                             const ShardToChunksMap& shardToChunksMap );
 
+        // only used when building
+        
+        /**
+         * @return if range is valid
+         */
+        bool addTagRange( const TagRange& range );
 
-        const ShardInfoMap& shardInfo() const { return _shardInfo; }
-        const ShardToChunksMap& shardChunks() const { return _shardChunks; }
+        // ---- these methods might be better suiting in BalancerPolicy
+        
+        /**
+         * @param forTag "" if you don't care, or a tag
+         * @return shard best suited to receive a chunk
+         */
+        string getBestReceieverShard( const string& forTag ) const;
 
+        /**
+         * @return the shard with the most chunks
+         *         based on # of chunks with the given tag
+         */
+        string getMostOverloadedShard( const string& forTag ) const;
+
+
+        // ---- basic accessors, counters, etc...
+
+        /** @return total number of chunks  */
+        unsigned totalChunks() const;
+
+        /** @return number of chunks in this shard */
+        unsigned numberOfChunksInShard( const string& shard ) const;
+
+        /** @return number of chunks in this shard with the given tag */
+        unsigned numberOfChunksInShardWithTag( const string& shard, const string& tag ) const;
+
+        /** @return chunks for the shard */
+        const vector<BSONObj>& getChunks( const string& shard ) const;
+
+        /** @return all tags we know about, not include "" */
+        const set<string>& tags() const { return _allTags; }
+
+        /** @return the right tag for chunk, possibly "" */
+        string getTagForChunk( const BSONObj& chunk ) const;
+        
+        /** @return all shards we know about */
+        const set<string>& shards() const { return _shards; }
+
+        /** @return the ShardInfo for the shard */
+        const ShardInfo& shardInfo( const string& shard ) const;
+        
+        /** writes all state to log() */
+        void dump() const;
         
     private:
         const ShardInfoMap& _shardInfo;
         const ShardToChunksMap& _shardChunks;
+        map<BSONObj,TagRange> _tagRanges;
+        set<string> _allTags;
+        set<string> _shards;
     };
 
     class BalancerPolicy {
@@ -109,18 +178,15 @@ namespace mongo {
          * moving, it returns NULL.
          *
          * @param ns is the collections namepace.
-         * @param shardToChunksMap is a map from shardId to chunks that live there. A chunk's format
-         * is { }.
+         * @param DistributionStatus holds all the info about the current state of the cluster/namespace
          * @param balancedLastTime is the number of chunks effectively moved in the last round.
          * @returns NULL or MigrateInfo of the best move to make towards balacing the collection.
+         *          caller owns the MigrateInfo instance
          */
         static MigrateInfo* balance( const string& ns, 
                                      const DistributionStatus& distribution,
                                      int balancedLastTime );
-
-        // below exposed for testing purposes only -- treat it as private --
-
-        static BSONObj pickChunk( const vector<BSONObj>& from, const vector<BSONObj>& to );
+        
 
     };
 

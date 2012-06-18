@@ -133,6 +133,9 @@ namespace mongo {
         void addHook( DBConnectionHook * hook ); // we take ownership
         void appendInfo( BSONObjBuilder& b );
 
+        // Removes and deletes all connections from the pool for the host (regardless of timeout)
+        void removeHost( const string& host );
+
         /** compares server namees, but is smart about replica set names */
         struct serverNameCompare {
             bool operator()( const string& a , const string& b ) const;
@@ -218,15 +221,20 @@ namespace mongo {
     public:
 
         // Factory functions for getting ScopedDbConnections.  The caller owns the resulting object
-        // and is responsible for deleting it when finished.
+        // and is responsible for deleting it when finished. This should be used when running a
+        // command on a shard from the mongos and the command should run with the client's
+        // authentication.  If the command should be run with full permissions regardless
+        // of whether or not the user is authorized, then use getInternalScopedDbConnection().
         static ScopedDbConnection* getScopedDbConnection(const string& host,
                                                          double socketTimeout = 0);
         static ScopedDbConnection* getScopedDbConnection();
 
         // Gets a ScopedDbConnection designed to be used for internal communication within a cluster
         // The mongod/mongos implementations of these set the AuthenticationTable on the underlying
-        // connection to the internalSecurity permissions.  These should not be called by consumers
-        // of the C++ client library
+        // connection to the internalSecurity permissions.  All commands run on the shard mongods
+        // using this connection will have full access.  If the command should only be run on the
+        // shard if the client has permission to do so, then use getScopedDbConnection().
+        // These functions should not be called by consumers of the C++ client library.
         static ScopedDbConnection* getInternalScopedDbConnection(const string& host,
                                                                  double socketTimeout = 0);
         static ScopedDbConnection* getInternalScopedDbConnection();
@@ -278,6 +286,7 @@ namespace mongo {
                 kill();
             else
             */
+            _conn->clearAuthenticationTable();
             pool.release(_host, _conn);
             _conn = 0;
         }
