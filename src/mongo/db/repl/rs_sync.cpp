@@ -119,8 +119,7 @@ namespace replset {
             try {
                 if (!st->syncApply(*it)) {
                     if (st->shouldRetry(*it)) {
-                        massert(15915, "replSet update still fails after adding missing object", 
-                                st->syncApply(*it));
+                        fassert(15915, st->syncApply(*it));
                     }
                 }
             }
@@ -145,7 +144,7 @@ namespace replset {
             Client::initThread("repl prefetch worker");
         }
         const char *ns = op.getStringField("ns");
-        if (ns && (ns[0] != 0)) {
+        if (ns && (ns[0] != '\0')) {
             Client::ReadContext ctx(ns);
             prefetchPagesForReplicatedOp(op);
         }
@@ -169,7 +168,9 @@ namespace replset {
         for (std::vector< std::vector<BSONObj> >::const_iterator it = writerVectors.begin();
              it != writerVectors.end();
              ++it) {
-            writerPool.schedule(applyFunc, boost::cref(*it), this);
+            if (!it->empty()) {
+                writerPool.schedule(applyFunc, boost::cref(*it), this);
+            }
         }
         writerPool.join();
     }
