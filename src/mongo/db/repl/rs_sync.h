@@ -33,7 +33,7 @@ namespace replset {
      * "Normal" replica set syncing
      */
     class SyncTail : public Sync {
-        typedef void (*multiSyncApplyFunc)(const std::vector<BSONObj>& ops, SyncTail* st);
+        typedef void (*MultiSyncApplyFunc)(const std::vector<BSONObj>& ops, SyncTail* st);
     public:
         SyncTail(BackgroundSyncInterface *q);
         virtual ~SyncTail();
@@ -48,15 +48,18 @@ namespace replset {
         // After ops have been written to db, call this
         // to update local oplog.rs, as well as notify the primary
         // that we have applied the ops.
+        // Ops are removed from the deque.
         void applyOpsToOplog(std::deque<BSONObj>* ops);
+
     protected:
         static const unsigned int replBatchSize = 128;
 
         // Prefetch and write a deque of operations, using the supplied function.
         // Initial Sync and Sync Tail each use a different function.
-        void multiApply(std::deque<BSONObj>& ops, multiSyncApplyFunc applyFunc);
+        void multiApply(std::deque<BSONObj>& ops, MultiSyncApplyFunc applyFunc);
+
     private:
-        BackgroundSyncInterface* _queue;
+        BackgroundSyncInterface* _networkQueue;
 
         // Doles out all the work to the reader pool threads and waits for them to complete
         void prefetchOps(const std::deque<BSONObj>& ops);
@@ -65,7 +68,7 @@ namespace replset {
 
         // Doles out all the work to the writer pool threads and waits for them to complete
         void applyOps(const std::vector< std::vector<BSONObj> >& writerVectors, 
-                      multiSyncApplyFunc applyFunc);
+                      MultiSyncApplyFunc applyFunc);
 
         void fillWriterVectors(const std::deque<BSONObj>& ops, 
                                std::vector< std::vector<BSONObj> >* writerVectors);

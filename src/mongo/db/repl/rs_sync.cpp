@@ -39,13 +39,13 @@ namespace mongo {
 namespace replset {
 
     SyncTail::SyncTail(BackgroundSyncInterface *q) :
-        Sync(""), _queue(q)
+        Sync(""), _networkQueue(q)
     {}
 
     SyncTail::~SyncTail() {}
 
     bool SyncTail::peek(BSONObj* op) {
-        return _queue->peek(op);
+        return _networkQueue->peek(op);
     }
     /* apply the log op that is in param o
        @return bool success (true) or failure (false)
@@ -163,7 +163,7 @@ namespace replset {
     
     // Doles out all the work to the writer pool threads and waits for them to complete
     void SyncTail::applyOps(const std::vector< std::vector<BSONObj> >& writerVectors, 
-                                     multiSyncApplyFunc applyFunc) {
+                                     MultiSyncApplyFunc applyFunc) {
         ThreadPool& writerPool = theReplSet->getWriterPool();
         for (std::vector< std::vector<BSONObj> >::const_iterator it = writerVectors.begin();
              it != writerVectors.end();
@@ -176,7 +176,7 @@ namespace replset {
     }
 
     // Doles out all the work to the writer pool threads and waits for them to complete
-    void SyncTail::multiApply( std::deque<BSONObj>& ops, multiSyncApplyFunc applyFunc ) {
+    void SyncTail::multiApply( std::deque<BSONObj>& ops, MultiSyncApplyFunc applyFunc ) {
 
         // Use a ThreadPool to prefetch all the operations in a batch.
         prefetchOps(ops);
@@ -294,10 +294,10 @@ namespace replset {
                 if (theReplSet->isPrimary()) {
                     return;
                 }
-
+                time_t now = time(0);
                 // occasionally check some things
-                if (ops.empty() || time(0) - lastTimeChecked >= 1) {
-                    lastTimeChecked = time(0);
+                if (ops.empty() || now > lastTimeChecked) {
+                    lastTimeChecked = now;
                     // can we become secondary?
                     // we have to check this before calling mgr, as we must be a secondary to
                     // become primary
@@ -323,14 +323,14 @@ namespace replset {
                     break;
                 }
             }
-            const BSONObj& lastOp = ops[ops.size()-1];
+            const BSONObj& lastOp = ops.back();
             handleSlaveDelay(lastOp);
 
             // Set minValid to the last op to be applied in this next batch.
             // This will cause this node to go into RECOVERING state
             // if we should crash and restart before updating the oplog
             { 
-                Client::WriteContext cx( "local." );   
+                Client::WriteContext cx( "local" );   
                 Helpers::putSingleton("local.replset.minvalid", lastOp);
             }
             multiApply(ops, multiSyncApply);
@@ -355,7 +355,7 @@ namespace replset {
             // if we don't have anything in the queue, wait a bit for something to appear
             if (ops->empty()) {
                 // block 1 second
-                _queue->waitForMore();
+                _networkQueue->waitForMore();
                 return false;
             }
 
@@ -367,7 +367,7 @@ namespace replset {
             if (ops->empty()) {
                 // apply commands one-at-a-time
                 ops->push_back(op);
-                _queue->consume();
+                _networkQueue->consume();
             }
 
             // otherwise, apply what we have so far and come back for the command
@@ -376,7 +376,7 @@ namespace replset {
 
         // Copy the op to the deque and remove it from the bgsync queue.
         ops->push_back(op);
-        _queue->consume();
+        _networkQueue->consume();
 
         // Go back for more ops
         return false;
@@ -393,7 +393,7 @@ namespace replset {
              }
         }
 
-        // Update w on primary
+        // Update write concern on primary
         BackgroundSync::notify();
     }
 
