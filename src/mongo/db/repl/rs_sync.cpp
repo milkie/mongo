@@ -77,14 +77,6 @@ namespace replset {
             lk.reset(new Lock::DBWrite(ns)); 
         }
 
-        // if we have become primary, we don't want to apply things from elsewhere
-        // anymore. assumePrimary is in the db lock so we are safe as long as
-        // we check after we locked above.
-        if( theReplSet->isPrimary() ) {
-            log() << "replSet stopping syncTail we are now primary" << rsLog;
-            return false;
-        }
-
         Client::Context ctx(ns, dbpath, false);
         ctx.getClient()->curop()->reset();
         bool ok = !applyOperation_inlock(op);
@@ -93,59 +85,58 @@ namespace replset {
         return ok;
     }
 
+    void initializeWriterThread() {
+        // Only do this once per thread
+        if (!ClientBasic::getCurrent()) {
+            Client::initThread("repl writer worker");
+            // allow us to get through the magic barrier
+            Lock::ParallelBatchWriterMode::iAmABatchParticipant();
+        }
+    }
 
-        void initializeWriterThread() {
-            // Only do this once per thread
-            if (!ClientBasic::getCurrent()) {
-                Client::initThread("repl writer worker");
-                // allow us to get through the magic barrier
-                Lock::ParallelBatchWriterMode::iAmABatchParticipant();
+    // This free function is used by the writer threads to apply each op
+    void multiSyncApply(const std::vector<BSONObj>& ops, SyncTail* st) {
+        initializeWriterThread();
+        for (std::vector<BSONObj>::const_iterator it = ops.begin();
+             it != ops.end();
+             ++it) {
+            try {
+                fassert(16359, st->syncApply(*it));
+            } catch (DBException& e) {
+                error() << "writer worker caught exception: " << e.what() 
+                        << " on: " << it->toString() << endl;
+                fassertFailed(16360);
             }
         }
+    }
 
-        // This free function is used by the writer threads to apply each op
-        void multiSyncApply(const std::vector<BSONObj>& ops, SyncTail* st) {
-            initializeWriterThread();
-            for (std::vector<BSONObj>::const_iterator it = ops.begin();
-                 it != ops.end();
-                 ++it) {
-                try {
-                    fassert(16359, st->syncApply(*it));
-                } catch (DBException& e) {
-                    error() << "writer worker caught exception: " << e.what() 
-                            << " on: " << it->toString() << endl;
-                    fassertFailed(16360);
-                }
-            }
-        }
-
-        // This free function is used by the initial sync writer threads to apply each op
-        void multiInitialSyncApply(const std::vector<BSONObj>& ops, SyncTail* st) {
-            initializeWriterThread();
-            for (std::vector<BSONObj>::const_iterator it = ops.begin();
-                 it != ops.end();
-                 ++it) {
-                try {
-                    if (!st->syncApply(*it)) {
-                        if (st->shouldRetry(*it)) {
-                            massert(15915, "replSet update still fails after adding missing object", 
-                                    st->syncApply(*it));
-                        }
+    // This free function is used by the initial sync writer threads to apply each op
+    void multiInitialSyncApply(const std::vector<BSONObj>& ops, SyncTail* st) {
+        initializeWriterThread();
+        for (std::vector<BSONObj>::const_iterator it = ops.begin();
+             it != ops.end();
+             ++it) {
+            try {
+                if (!st->syncApply(*it)) {
+                    if (st->shouldRetry(*it)) {
+                        massert(15915, "replSet update still fails after adding missing object", 
+                                st->syncApply(*it));
                     }
                 }
-                catch (DBException& e) {
-                    // Skip duplicate key exceptions.
-                    // These are relatively common on initial sync: if a document is inserted
-                    // early in the clone step, the insert will be replayed but the document
-                    // will probably already have been cloned over.
-                    if( e.getCode() == 11000 || e.getCode() == 11001 || e.getCode() == 12582) {
-                        return; // ignore
-                    }
-                    error() << "exception: " << e.what() << " on: " << it->toString() << endl;
-                    fassertFailed(16361);
+            }
+            catch (DBException& e) {
+                // Skip duplicate key exceptions.
+                // These are relatively common on initial sync: if a document is inserted
+                // early in the clone step, the insert will be replayed but the document
+                // will probably already have been cloned over.
+                if( e.getCode() == 11000 || e.getCode() == 11001 || e.getCode() == 12582) {
+                    return; // ignore
                 }
+                error() << "exception: " << e.what() << " on: " << it->toString() << endl;
+                fassertFailed(16361);
             }
         }
+    }
 
 
     // The pool threads call this to prefetch each op
@@ -298,12 +289,14 @@ namespace replset {
             tryPopAndWaitForMore(&ops);
 
             while (ops.size() < replBatchSize) {
+
+                if (theReplSet->isPrimary()) {
+                    return;
+                }
+
                 // occasionally check some things
                 if (ops.empty() || time(0) - lastTimeChecked >= 1) {
                     lastTimeChecked = time(0);
-                    if (theReplSet->isPrimary()) {
-                        return;
-                    }
                     // can we become secondary?
                     // we have to check this before calling mgr, as we must be a secondary to
                     // become primary
