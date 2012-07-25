@@ -40,6 +40,7 @@ import os
 import parser
 import re
 import shutil
+import shlex
 import socket
 from subprocess import (Popen,
                         PIPE,
@@ -60,12 +61,12 @@ except ImportError:
 # TODO clean this up so we don't need globals...
 mongo_repo = os.getcwd() #'./'
 failfile = os.path.join(mongo_repo, 'failfile.smoke')
-cpp_unittest_list = os.path.join(mongo_repo, 'build', 'unittests.txt')
 test_path = None
 mongod_executable = None
 mongod_port = None
 shell_executable = None
 continue_on_failure = None
+file_of_commands_mode = False
 
 tests = []
 winners = []
@@ -191,7 +192,8 @@ class mongod(object):
             argv += ['--auth']
             self.auth = True
         print "running " + " ".join(argv)
-        self.proc = Popen(buildlogger(argv, is_global=True))
+        self.proc = self._start(buildlogger(argv, is_global=True))
+
         if not self.did_mongod_start(self.port):
             raise Exception("Failed to start mongod")
 
@@ -206,20 +208,53 @@ class mongod(object):
                 for source in local.sources.find(fields=["syncedTo"]):
                     synced = synced and "syncedTo" in source and source["syncedTo"]
 
+    def _start(self, argv):
+        """In most cases, just call subprocess.Popen(). On windows,
+        add the started process to a new Job Object, so that any
+        child processes of this process can be killed with a single
+        call to TerminateJobObject (see self.stop()).
+        """
+        proc = Popen(argv)
+
+        if os.sys.platform == "win32":
+            # Create a job object with the "kill on job close"
+            # flag; this is inherited by child processes (ie
+            # the mongod started on our behalf by buildlogger)
+            # and lets us terminate the whole tree of processes
+            # rather than orphaning the mongod.
+            import win32job
+
+            self.job_object = win32job.CreateJobObject(None, '')
+
+            job_info = win32job.QueryInformationJobObject(
+                self.job_object, win32job.JobObjectExtendedLimitInformation)
+            job_info['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            win32job.SetInformationJobObject(
+                self.job_object,
+                win32job.JobObjectExtendedLimitInformation,
+                job_info)
+
+            win32job.AssignProcessToJobObject(self.job_object, proc._handle)
+
+        return proc
+
     def stop(self):
         if not self.proc:
             print >> sys.stderr, "probable bug: self.proc unset in stop()"
             return
         try:
-            # This function not available in Python 2.5
-            self.proc.terminate()
-        except AttributeError:
             if os.sys.platform == "win32":
-                import win32process
-                win32process.TerminateProcess(self.proc._handle, -1)
+                import win32job
+                win32job.TerminateJobObject(self.job_object, -1)
+                import time
+                # Windows doesn't seem to kill the process immediately, so give it some time to die
+                time.sleep(5) 
             else:
-                from os import kill
-                kill(self.proc.pid, 15)
+                # This function not available in Python 2.5
+                self.proc.terminate()
+        except AttributeError:
+            from os import kill
+            kill(self.proc.pid, 15)
         self.proc.wait()
         sys.stderr.flush()
         sys.stdout.flush()
@@ -295,7 +330,17 @@ def skipTest(path):
         if basename in ["cursor8.js", "indexh.js", "dropdb.js"]:
             return True
     if auth or keyFile: # For tests running with auth
-        return os.path.join(parentDir,basename) in ["sharding/sync3.js", "sharding/sync6.js"]
+        # Skip any tests that run with auth explicitly
+        if parentDir == "auth" or "auth" in basename or parentDir == "tool": # SERVER-6368
+            return True
+        # These tests don't pass with authentication due to limitations of the test infrastructure,
+        # not due to actual bugs.
+        if os.path.join(parentDir,basename) in ["sharding/sync3.js", "sharding/sync6.js", "sharding/parallel.js"]:
+            return True
+        # These tests fail due to bugs
+        if os.path.join(parentDir,basename) in ["sharding/sync_conn_cmd.js"]:
+            return True
+
     return False
 
 def runTest(test):
@@ -308,7 +353,18 @@ def runTest(test):
     if skipTest(path):
         print "skipping " + path
         return
-    if ext == ".js":
+    if file_of_commands_mode:
+        # smoke.py was invoked like "--mode files --from-file foo",
+        # so don't try to interpret the test path too much
+        if os.sys.platform == "win32":
+            argv = [path]
+        else:
+            argv = shlex.split(path)
+        path = argv[0]
+        # if the command is a python script, use the script name
+        if os.path.basename(path) in ('python', 'python.exe'):
+            path = argv[1]
+    elif ext == ".js":
         argv = [shell_executable, "--port", mongod_port]
         if not usedb:
             argv += ["--nodb"]
@@ -504,6 +560,7 @@ suiteGlobalConfig = {"js": ("[!_]*.js", True),
                      "sharding": ("sharding/*.js", False),
                      "tool": ("tool/*.js", False),
                      "aggregation": ("aggregation/*.js", True),
+                     "multiVersion": ("multiVersion/*.js", True )
                      }
 
 def expand_suites(suites,expandUseDB=True):
@@ -518,9 +575,6 @@ def expand_suites(suites,expandUseDB=True):
             else:
                 program = 'test'
             (globstr, usedb) = (program, False)
-        elif suite == "cppUnittests":
-            if os.path.exists(cpp_unittest_list):
-                tests += [(line.strip(), False) for line in file(cpp_unittest_list)]
         elif suite == 'perf':
             if os.sys.platform == "win32":
                 program = 'perftest.exe'
@@ -573,8 +627,9 @@ def add_exe(e):
         e += ".exe"
     return e
 
-def set_globals(options):
+def set_globals(options, tests):
     global mongod_executable, mongod_port, shell_executable, continue_on_failure, small_oplog, small_oplog_rs, no_journal, no_preallocj, auth, keyFile, smoke_db_prefix, test_path
+    global file_of_commands_mode
     #Careful, this can be called multiple times
     test_path = options.test_path
 
@@ -595,8 +650,24 @@ def set_globals(options):
         small_oplog_rs = options.small_oplog_rs
     no_journal = options.no_journal
     no_preallocj = options.no_preallocj
-    auth = options.auth
-    keyFile = options.keyFile
+    if options.mode == 'suite' and tests == ['client']:
+        # The client suite doesn't work with authentication
+        if options.auth:
+            print "Not running client suite with auth even though --auth was provided"
+        auth = False;
+        keyFile = False;
+    else:
+        auth = options.auth
+        keyFile = options.keyFile
+
+    if auth and not keyFile:
+        # if only --auth was given to smoke.py, load the
+        # default keyFile from jstests/libs/authTestsKey
+        keyFile = os.path.join(mongo_repo, 'jstests', 'libs', 'authTestsKey')
+
+    # if smoke.py is running a list of commands read from a
+    # file (or stdin) rather than running a suite of js tests
+    file_of_commands_mode = options.File and options.mode == 'files'
 
 def clear_failfile():
     if os.path.exists(failfile):
@@ -633,7 +704,7 @@ def run_old_fails():
 
             filename = os.path.basename(path)
             if filename in ('test', 'test.exe') or filename.endswith('.js'):
-                set_globals(options)
+                set_globals(options, [filename])
                 oldWinners = len(winners)
                 run_tests([test])
                 if len(winners) != oldWinners: # can't use return value due to continue_on_failure
@@ -715,6 +786,9 @@ def main():
     parser.add_option('--reset-old-fails', dest='reset_old_fails', default=False,
                       action="store_true",
                       help='Clear the failfile. Do this if all tests pass')
+    parser.add_option('--with-cleanbb', dest='with_cleanbb', default=False,
+                      action="store_true",
+                      help='Clear database files from previous smoke.py runs')
 
     # Buildlogger invocation from command line
     parser.add_option('--buildlogger-builder', dest='buildlogger_builder', default=None,
@@ -729,7 +803,7 @@ def main():
     global tests
     (options, tests) = parser.parse_args()
 
-    set_globals(options)
+    set_globals(options, tests)
 
     buildlogger_opts = (options.buildlogger_builder, options.buildlogger_buildnum, options.buildlogger_credentials)
     if all(buildlogger_opts):
@@ -769,7 +843,12 @@ def main():
         tests = filter( lambda x : ignore_patt.search( x[0] ) == None, tests )
 
     if not tests:
-        raise Exception( "no tests specified" )
+        print "warning: no tests specified"
+        return
+
+    if options.with_cleanbb:
+        dbroot = os.path.join(options.smoke_db_prefix, 'data', 'db')
+        call([utils.find_python(), "buildscripts/cleanbb.py", "--nokill", dbroot])
 
     try:
         run_tests(tests)

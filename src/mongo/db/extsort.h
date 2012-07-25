@@ -25,7 +25,6 @@
 #include "mongo/db/namespace-inl.h"
 #include "mongo/db/curop-inl.h"
 #include "mongo/util/array.h"
-#include "mongo/util/mmap.h"
 
 namespace mongo {
 
@@ -37,6 +36,8 @@ namespace mongo {
         BSONObjExternalSorter( IndexInterface &i, const BSONObj & order = BSONObj() , long maxFileSize = 1024 * 1024 * 100 );
         ~BSONObjExternalSorter();
         typedef pair<BSONObj,DiskLoc> Data;
+        /** @return the IndexInterface used to perform key comparisons. */
+        const IndexInterface& getIndexInterface() const { return _idxi; }
  
     private:
         static HLMutex _extSortMutex;
@@ -66,9 +67,11 @@ namespace mongo {
             bool more();
             Data next();
         private:
-            MemoryMappedFile _file;
-            char * _buf;
-            char * _end;
+            bool _read( char* buf, long long count );
+
+            int _file;
+            unsigned long long _length;
+            unsigned long long _readSoFar;
         };
 
     public:

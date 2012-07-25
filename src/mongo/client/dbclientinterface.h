@@ -586,6 +586,15 @@ namespace mongo {
         */
         virtual bool auth(const string &dbname, const string &username, const string &pwd, string& errmsg, bool digestPassword = true, Auth::Level * level = NULL);
 
+        /**
+         * Logs out the connection for the given database.
+         *
+         * @param dbname the database to logout from.
+         * @param info the result object for the logout command (provided for backwards
+         *     compatibility with mongo shell)
+         */
+        virtual void logout(const string& dbname, BSONObj& info);
+
         /** count number of objects in collection ns that match the query criteria specified
             throws UserAssertion if database returns an error
         */
@@ -728,7 +737,7 @@ namespace mongo {
 
         /** Run a map/reduce job on the server.
 
-            See http://www.mongodb.org/display/DOCS/MapReduce
+            See http://dochub.mongodb.org/core/mapreduce
 
             ns        namespace (db+collection name) of input data
             jsmapf    javascript map function code
@@ -819,8 +828,8 @@ namespace mongo {
 
         bool exists( const string& ns );
 
-        void setAuthenticationTable ( const AuthenticationTable& auth );
-        void clearAuthenticationTable ();
+        virtual void setAuthenticationTable( const AuthenticationTable& auth );
+        virtual void clearAuthenticationTable();
 
         /** Create an index if it does not already exist.
             ensureIndex calls are remembered so it is safe/fast to call this function many
@@ -882,6 +891,9 @@ namespace mongo {
         QueryOptions availableOptions();
 
         virtual QueryOptions _lookupAvailableOptions();
+
+        bool hasAuthenticationTable();
+        AuthenticationTable& getAuthenticationTable();
 
     private:
         enum QueryOptions _cachedAvailableOptions;

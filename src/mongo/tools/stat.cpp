@@ -24,6 +24,7 @@
 #include "../util/net/httpclient.h"
 #include "../util/text.h"
 #include "mongo/client/dbclientcursor.h"
+#include "mongo/db/jsobjmanipulator.h"
 #include "tool.h"
 #include "stat_util.h"
 #include <fstream>
@@ -77,7 +78,7 @@ namespace mongo {
             out << "   vsize    \t- virtual size of process in megabytes\n";
             out << "   res      \t- resident size of process in megabytes\n";
             out << "   faults   \t- # of pages faults per sec\n";
-            out << "   locked   \t- percent of time in global write lock\n";
+            out << "   locked   \t- name of and percent time for most locked database\n";
             out << "   idx miss \t- percent of btree page misses (sampled)\n";
             out << "   qr|qw    \t- queue lengths for clients waiting (read|write)\n";
             out << "   ar|aw    \t- active clients (read|write)\n";
@@ -208,6 +209,8 @@ namespace mongo {
             if ( prev.isEmpty() )
                 return -1;
 
+            int maxLockedDbWidth = 0;
+
             while ( rowCount == 0 || rowNum < rowCount ) {
                 sleepsecs((int)ceil(_statUtil.getSeconds()));
                 BSONObj now;
@@ -226,6 +229,8 @@ namespace mongo {
 
                     BSONObj out = _statUtil.doRow( prev , now );
 
+                    // adjust width up as longer 'locked db' values appear
+                    setMaxLockedDbWidth( &out, &maxLockedDbWidth ); 
                     if ( showHeaders && rowNum % 10 == 0 ) {
                         printHeaders( out );
                     }
@@ -243,6 +248,24 @@ namespace mongo {
                 rowNum++;
             }
             return 0;
+        }
+
+        /* Get the size of the 'locked db' field from a row of stats. If 
+         * smaller than the current column width, set to the max.  If
+         * greater, set the maxWidth to that value.
+         */
+        void setMaxLockedDbWidth( const BSONObj* o, int* maxWidth ) {
+            BSONElement e = o->getField("locked db");
+            if ( e.isABSONObj() ) {
+                BSONObj x = e.Obj();
+                if ( x["width"].numberInt() < *maxWidth ) {
+                    BSONElementManipulator manip( x["width"] );
+                    manip.setNumber( *maxWidth );
+                }
+                else {
+                    *maxWidth = x["width"].numberInt();
+                }
+            }
         }
 
         struct ServerState {
@@ -272,7 +295,7 @@ namespace mongo {
                 if ( ! conn.connect( state->host , errmsg ) )
                     state->error = errmsg;
                 long long cycleNumber = 0;
-                
+
                 if (! (state->username.empty() && state->password.empty()))
                     conn.auth("admin", state->username, state->password, errmsg);
 
@@ -392,14 +415,14 @@ namespace mongo {
 
         int runMany() {
             StateMap threads;
-            
+
             {
                 string orig = getParam( "host" );
                 bool showPorts = false;
                 if ( orig == "" )
                     orig = "localhost";
 
-                if ( orig.find( ":" ) != string::npos )
+                if ( orig.find( ":" ) != string::npos || hasParam( "port" ) )
                     showPorts = true;
 
                 StringSplitter ss( orig.c_str() , "," );
@@ -420,6 +443,7 @@ namespace mongo {
 
             int row = 0;
             bool discover = hasParam( "discover" );
+            int maxLockedDbWidth = 0;
 
             while ( 1 ) {
                 sleepsecs( (int)ceil(_statUtil.getSeconds()) );
@@ -454,6 +478,9 @@ namespace mongo {
                         longestHost = rows[i].host.size();
                     if ( rows[i].data.nFields() > biggest.nFields() )
                         biggest = rows[i].data;
+
+                    // adjust width up as longer 'locked db' values appear
+                    setMaxLockedDbWidth( &rows[i].data, &maxLockedDbWidth ); 
                 }
 
                 {
@@ -549,4 +576,3 @@ int main( int argc , char ** argv ) {
     mongo::Stat stat;
     return stat.main( argc , argv );
 }
-

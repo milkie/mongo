@@ -61,11 +61,23 @@ namespace mongo {
         return matcher.matches(obj);
     }
 
+    static void uassertNoWhereClause(BSONObj query) {
+        BSONForEach(e, query) {
+            // can't use the Matcher API because this would segfault the constructor
+            uassert(16395, "$where is not allowed inside of a $match aggregation expression",
+                    ! str::equals(e.fieldName(), "$where"));
+            if (e.isABSONObj())
+                uassertNoWhereClause(e.Obj());
+        }
+    }
+
     intrusive_ptr<DocumentSource> DocumentSourceMatch::createFromBson(
         BSONElement *pBsonElement,
         const intrusive_ptr<ExpressionContext> &pExpCtx) {
         uassert(15959, "the match filter must be an expression in an object",
                 pBsonElement->type() == Object);
+
+        uassertNoWhereClause(pBsonElement->Obj());
 
         intrusive_ptr<DocumentSourceMatch> pMatcher(
             new DocumentSourceMatch(pBsonElement->Obj(), pExpCtx));
@@ -83,12 +95,5 @@ namespace mongo {
         const intrusive_ptr<ExpressionContext> &pExpCtx):
         DocumentSourceFilterBase(pExpCtx),
         matcher(query) {
-    }
-
-    void DocumentSourceMatch::manageDependencies(
-        const intrusive_ptr<DependencyTracker> &pTracker) {
-#ifdef MONGO_LATER_SERVER_4644
-        verify(false); // $$$ implement dependencies on Matcher
-#endif /* MONGO_LATER_SERVER_4644 */
     }
 }

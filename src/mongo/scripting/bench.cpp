@@ -357,6 +357,8 @@ namespace mongo {
         return _brState->shouldWorkerFinish();
     }
 
+    void doNothing(const BSONObj&) { }
+
     void BenchRunWorker::generateLoadOnConnection( DBClientBase* conn ) {
         verify( conn );
         long long count = 0;
@@ -464,16 +466,24 @@ namespace mongo {
                         int expected = e["expected"].eoo() ? -1 : e["expected"].Int();
 
                         auto_ptr<DBClientCursor> cursor;
+                        int count;
 
-                        {
+                        BSONObj fixedQuery = fixQuery(e["query"].Obj());
+
+                        // use special query function for exhaust query option
+                        if (options & QueryOption_Exhaust) {
                             BenchRunEventTrace _bret(&_stats.queryCounter);
-                            cursor = conn->query( ns, fixQuery( e["query"].Obj() ), limit, skip, &filter, options, batchSize );
+                            boost::function<void (const BSONObj&)> castedDoNothing(doNothing);
+                            count =  conn->query(castedDoNothing, ns, fixedQuery, &filter, options);
+                        }
+                        else {
+                            BenchRunEventTrace _bret(&_stats.queryCounter);
+                            cursor = conn->query( ns, fixedQuery, limit, skip, &filter, options, batchSize );
+                            count = cursor->itcount();
                         }
 
-                        int count = cursor->itcount();
-
                         if ( expected >= 0 &&  count != expected ) {
-                            cout << "bench query on: " << ns << " expected: " << expected << " got: " << cout << endl;
+                            cout << "bench query on: " << ns << " expected: " << expected << " got: " << count << endl;
                             verify(false);
                         }
 
@@ -766,7 +776,7 @@ namespace mongo {
         }
     }
 
-     static void appendAverageMsIfAvailable(
+     static void appendAverageMicrosIfAvailable(
              BSONObjBuilder &buf, const std::string &name, const BenchRunEventCounter &counter) {
 
          if (counter.getNumEvents() > 0)
@@ -795,11 +805,11 @@ namespace mongo {
          buf.append( "note" , "values per second" );
          buf.append( "errCount", (long long) stats.errCount );
          buf.append( "trapped", "error: not implemented" );
-         appendAverageMsIfAvailable(buf, "findOneLatencyAverageMs", stats.findOneCounter);
-         appendAverageMsIfAvailable(buf, "insertLatencyAverageMs", stats.insertCounter);
-         appendAverageMsIfAvailable(buf, "deleteLatencyAverageMs", stats.deleteCounter);
-         appendAverageMsIfAvailable(buf, "updateLatencyAverageMs", stats.updateCounter);
-         appendAverageMsIfAvailable(buf, "queryLatencyAverageMs", stats.queryCounter);
+         appendAverageMicrosIfAvailable(buf, "findOneLatencyAverageMicros", stats.findOneCounter);
+         appendAverageMicrosIfAvailable(buf, "findOneLatencyAverageMicros", stats.insertCounter);
+         appendAverageMicrosIfAvailable(buf, "findOneLatencyAverageMicros", stats.deleteCounter);
+         appendAverageMicrosIfAvailable(buf, "findOneLatencyAverageMicros", stats.updateCounter);
+         appendAverageMicrosIfAvailable(buf, "findOneLatencyAverageMicros", stats.queryCounter);
 
          {
              BSONObjIterator i( after );

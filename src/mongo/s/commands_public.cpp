@@ -121,6 +121,8 @@ namespace mongo {
                 set<Shard> shards;
                 getShards(dbName, cmdObj, shards);
 
+                // TODO: Future is deprecated, replace with commandOp()
+
                 list< shared_ptr<Future::CommandResult> > futures;
                 for ( set<Shard>::const_iterator i=shards.begin(), end=shards.end() ; i != end ; i++ ) {
                     futures.push_back( Future::spawnCommand( i->getConnString() , dbName , cmdObj, 0 ) );
@@ -132,7 +134,18 @@ namespace mongo {
                 for ( list< shared_ptr<Future::CommandResult> >::iterator i=futures.begin(); i!=futures.end(); i++ ) {
                     shared_ptr<Future::CommandResult> res = *i;
                     if ( ! res->join() ) {
-                        errors.appendAs(res->result()["errmsg"], res->getServer());
+
+                        BSONObj result = res->result();
+
+                        if( ! result["errmsg"].eoo() ){
+                            errors.appendAs(res->result()["errmsg"], res->getServer());
+                        }
+                        else {
+
+                            // Can happen if message is empty, for some reason
+                            errors.append( res->getServer(), str::stream()
+                                << "result without error message returned : " << result );
+                        }
                     }
                     results.push_back( res->result() );
                     subobj.append( res->getServer() , res->result() );
@@ -279,6 +292,20 @@ namespace mongo {
                 output.appendNumber( "fileSize" , fileSize );
             }
         } DBStatsCmdObj;
+
+        class CreateCmd : public PublicGridCommand {
+        public:
+            CreateCmd() : PublicGridCommand( "create" ) {}
+            bool run(const string& dbName,
+                     BSONObj& cmdObj,
+                     int,
+                     string&,
+                     BSONObjBuilder& result,
+                     bool) {
+                DBConfigPtr conf = grid.getDBConfig( dbName , false );
+                return passthrough( conf , cmdObj , result );
+            }
+        } createCmd;
 
         class DropCmd : public PublicGridCommand {
         public:
@@ -964,7 +991,7 @@ namespace mongo {
         class Geo2dFindNearCmd : public PublicGridCommand {
         public:
             Geo2dFindNearCmd() : PublicGridCommand( "geoNear" ) {}
-            void help(stringstream& h) const { h << "http://www.mongodb.org/display/DOCS/Geospatial+Indexing#GeospatialIndexing-geoNearCommand"; }
+            void help(stringstream& h) const { h << "http://dochub.mongodb.org/core/geo#GeospatialIndexing-geoNearCommand"; }
             virtual bool passOptions() const { return true; }
             bool run(const string& dbName , BSONObj& cmdObj, int options, string& errmsg, BSONObjBuilder& result, bool) {
                 string collection = cmdObj.firstElement().valuestrsafe();
@@ -1480,6 +1507,21 @@ namespace mongo {
             }
         } compactCmd;
 
+        class EvalCmd : public PublicGridCommand {
+        public:
+            EvalCmd() : PublicGridCommand( "$eval" ) {}
+            virtual bool run(const string& dbName,
+                             BSONObj& cmdObj,
+                             int,
+                             string&,
+                             BSONObjBuilder& result,
+                             bool) {
+                // $eval isn't allowed to access sharded collections, but we need to leave the
+                // shard to detect that.
+                DBConfigPtr conf = grid.getDBConfig( dbName , false );
+                return passthrough( conf , cmdObj , result );
+            }
+        } evalCmd;
 
         /*
           Note these are in the pub_grid_cmds namespace, so they don't
@@ -1552,59 +1594,15 @@ namespace mongo {
             pShardPipeline->getInitialQuery(&shardQueryBuilder);
             BSONObj shardQuery(shardQueryBuilder.done());
 
-            ChunkManagerPtr cm(conf->getChunkManager(fullns));
-            set<Shard> shards;
-            cm->getShardsForQuery(shards, shardQuery);
+            // Run the command on the shards
+            map<Shard, BSONObj> shardResults;
+            SHARDED->commandOp(dbName, shardedCommand, options, fullns, shardQuery, shardResults);
 
-            /*
-              From MRCmd::Run: "we need to use our connections to the shard
-              so filtering is done correctly for un-owned docs so we allocate
-              them in our thread and hand off"
-            */
-            vector<boost::shared_ptr<ShardConnection> > shardConns;
-            list<boost::shared_ptr<Future::CommandResult> > futures;
-            for (set<Shard>::iterator i=shards.begin(), end=shards.end();
-                 i != end; i++) {
-                boost::shared_ptr<ShardConnection> temp(
-                    new ShardConnection(i->getConnString(), fullns));
-                verify(temp->get());
-                futures.push_back(
-                    Future::spawnCommand(i->getConnString(), dbName,
-                                         shardedCommand , 0, temp->get()));
-                shardConns.push_back(temp);
-            }
-                    
-            /* wrap the list of futures with a source */
-            intrusive_ptr<DocumentSourceCommandFutures> pSource(
-                DocumentSourceCommandFutures::create(
-                    errmsg, &futures, pExpCtx));
+            // Combine the shards' output and finish the pipeline
+            pPipeline->run(result, errmsg,
+                    DocumentSourceCommandShards::create(shardResults, pExpCtx));
 
-            /* run the pipeline */
-            bool failed = pPipeline->run(result, errmsg, pSource);
-
-/*
-            BSONObjBuilder shardresults;
-            for (list<boost::shared_ptr<Future::CommandResult> >::iterator i(
-                     futures.begin()); i!=futures.end(); ++i) {
-                boost::shared_ptr<Future::CommandResult> res(*i);
-                if (!res->join()) {
-                    error() << "sharded pipeline failed on shard: " <<
-                        res->getServer() << " error: " << res->result() << endl;
-                    result.append( "cause" , res->result() );
-                    errmsg = "mongod pipeline failed: ";
-                    errmsg += res->result().toString();
-                    failed = true;
-                    continue;
-                }
-
-                shardresults.append( res->getServer() , res->result() );
-            }
-*/
-
-            for(unsigned i = 0; i < shardConns.size(); ++i)
-                shardConns[i]->done();
-
-            if (failed && (errmsg.length() > 0))
+            if (errmsg.length() > 0)
                 return false;
 
             return true;

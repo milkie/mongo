@@ -43,8 +43,8 @@
  */
 ReplSetTest = function( opts ){
     this.name  = opts.name || "testReplSet";
-    this.host  = opts.host || getHostName();
-    this.useHostName = opts.useHostName
+    this.useHostName = opts.useHostName == undefined ? true : opts.useHostName;
+    this.host  = this.useHostName ? (opts.host || getHostName()) : 'localhost';
     this.numNodes = opts.nodes || 0;
     this.oplogSize = opts.oplogSize || 40;
     this.useSeedList = opts.useSeedList || false;
@@ -346,9 +346,15 @@ ReplSetTest.awaitRSClientHosts = function( conn, host, hostOk, rs ) {
                 // Check that *all* host properties are set correctly
                 var propOk = true
                 for( var prop in hostOk ){
-                    if( clientHost[prop] != hostOk[prop] ){ 
-                        propOk = false
-                        break
+                    if ( isObject( hostOk[prop] )) {
+                        if ( !friendlyEqual( hostOk[prop], clientHost[prop] )){
+                            propOk = false;
+                            break;
+                        }
+                    }
+                    else if ( clientHost[prop] != hostOk[prop] ){
+                        propOk = false;
+                        break;
                     }
                 }
                 
@@ -456,8 +462,8 @@ ReplSetTest.prototype.initiate = function( cfg , initCmd , timeout ) {
         if (!this.shardSvr) {
             master = this.getMaster();
             jsTest.addAuth(master);
+            jsTest.authenticateNodes(this.nodes);
         }
-        jsTest.authenticateNodes(this.nodes);
     }
 }
 
@@ -597,6 +603,16 @@ ReplSetTest.prototype.start = function( n , options , restart , wait ){
     // TODO : should we do something special if we don't currently know about this node?
     n = this.getNodeId( n )
     
+    //
+    // Note : this replaces the binVersion of the shared startSet() options the first time 
+    // through, so the full set is guaranteed to have different versions if size > 1.  If using
+    // start() independently, independent version choices will be made
+    //
+    if( options && options.binVersion ){
+        options.binVersion = 
+            MongoRunner.versionIterator( options.binVersion )
+    }
+    
     options = Object.merge( defaults, options )
     options = Object.merge( options, this.nodeOptions[ "n" + n ] )
     
@@ -733,7 +749,7 @@ ReplSetTest.prototype.stop = function( n , signal, wait /* wait for stop */, opt
  * @param {Object} opts @see MongoRunner.stopMongod
  */
 ReplSetTest.prototype.stopSet = function( signal , forRestart, opts ) {
-    for(i=0; i < this.ports.length; i++) {
+    for(var i=0; i < this.ports.length; i++) {
         this.stop( i, signal, false, opts );
     }
     if ( forRestart ) { return; }

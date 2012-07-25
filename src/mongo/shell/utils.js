@@ -828,7 +828,10 @@ if ( typeof _threadInject != "undefined" ){
                                    "jstests/fsync2.js", // May be placed in serialTestsArr once SERVER-4243 is fixed.
                                    "jstests/bench_test1.js",
                                    "jstests/padding.js",
-                                   "jstests/queryoptimizera.js"] );
+                                   "jstests/queryoptimizera.js",
+                                   "jstests/loglong.js" // log might overflow before 
+                                                        // this has a chance to see the message
+                                  ] );
         
         // some tests can't be run in parallel with each other
         var serialTestsArr = [ "jstests/fsync.js"
@@ -1123,28 +1126,30 @@ jsTest.randomize = function( seed ) {
 * with authentication enabled.
 */
 jsTest.addAuth = function(conn) {
-    print ("Adding admin user on connection: " + conn);
-    return conn.getDB('admin').addUser(jsTestOptions().adminUser, jsTestOptions().adminPassword);
+    // Get a connection over localhost so that the first user can be added.
+    var localconn = conn;
+    if ( localconn.host.indexOf('localhost') != 0 ) {
+        print( 'Getting locahost connection instead of ' + conn + ' to add first admin user' );
+        var hosts = conn.host.split(',');
+        for ( var i = 0; i < hosts.length; i++ ) {
+            hosts[i] = 'localhost:' + hosts[i].split(':')[1];
+        }
+        localconn = new Mongo(hosts.join(','));
+    }
+    print ("Adding admin user on connection: " + localconn);
+    return localconn.getDB('admin').addUser(jsTestOptions().adminUser, jsTestOptions().adminPassword,
+                                            false, 'majority', 60000);
 }
 
 jsTest.authenticate = function(conn) {
+    // Set authenticated to stop an infinite recursion from getDB calling back into authenticate
     conn.authenticated = true;
-    result1 = null;
-    result2 = null;
-    if (jsTest.options().auth) {
+    if (jsTest.options().auth || jsTest.options().keyFile) {
         print ("Authenticating to admin user on connection: " + conn);
-        result1 = conn.getDB('admin').auth(jsTestOptions().adminUser, jsTestOptions().adminPassword);
+        conn.authenticated = conn.getDB('admin').auth(jsTestOptions().adminUser,
+                                                      jsTestOptions().adminPassword);
+        return conn.authenticated;
     }
-    if (jsTest.options().keyFile && !jsTest.isMongos(conn)) {
-        print ("Authenticating to system user on connection: " + conn);
-        result2 = conn.getDB('local').auth(jsTestOptions().authUser, jsTestOptions().authPassword);
-    }
-
-    if (result1 == 1 || result2 == 1) {
-        return 1;
-    }
-
-    return result2 != null ? result2 : result1;
 }
 
 jsTest.authenticateNodes = function(nodes) {
@@ -1816,7 +1821,7 @@ rs.debug.getLastOpWritten = function(server) {
 
 help = shellHelper.help = function (x) {
     if (x == "mr") {
-        print("\nSee also http://www.mongodb.org/display/DOCS/MapReduce");
+        print("\nSee also http://dochub.mongodb.org/core/mapreduce");
         print("\nfunction mapf() {");
         print("  // 'this' holds current document to inspect");
         print("  emit(key, value);");

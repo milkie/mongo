@@ -86,6 +86,12 @@ namespace replset {
         OplogReader _oplogMarker; // not locked, only used by notifier thread
         OpTime _consumedOpTime; // not locked, only used by notifier thread
 
+        struct QueueCounter {
+            QueueCounter();
+            unsigned long long waitTime;
+            unsigned int numElems;
+        } _queueCounter;
+
         BackgroundSync();
         BackgroundSync(const BackgroundSync& s);
         BackgroundSync operator=(const BackgroundSync& s);
@@ -127,6 +133,9 @@ namespace replset {
         virtual void consume();
         virtual Member* getSyncTarget();
         virtual void waitForMore();
+
+        // For monitoring
+        BSONObj getCounters();
     };
 
 

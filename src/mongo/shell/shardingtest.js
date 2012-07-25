@@ -214,6 +214,7 @@ ShardingTest = function( testName , numShards , verboseLevel , numMongos , other
                            oplogSize : 40,
                            pathOpts : Object.merge( pathOpts, { shard : i } )}
             
+            rsDefaults = Object.merge( rsDefaults, ShardingTest.rsOptions || {} )
             rsDefaults = Object.merge( rsDefaults, otherParams.rs )
             rsDefaults = Object.merge( rsDefaults, otherParams.rsOptions )
             rsDefaults = Object.merge( rsDefaults, otherParams["rs" + i] )
@@ -242,6 +243,13 @@ ShardingTest = function( testName , numShards , verboseLevel , numMongos , other
                             dbpath : "$testName$shard",
                             keyFile : keyFile
                           }
+            
+            options = Object.merge( options, ShardingTest.shardOptions || {} )
+            
+            if( otherParams.shardOptions && otherParams.shardOptions.binVersion ){
+                otherParams.shardOptions.binVersion = 
+                    MongoRunner.versionIterator( otherParams.shardOptions.binVersion )
+            }
             
             options = Object.merge( options, otherParams.shardOptions )
             options = Object.merge( options, otherParams["d" + i] )
@@ -291,8 +299,16 @@ ShardingTest = function( testName , numShards , verboseLevel , numMongos , other
                             port : 29000 + i,
                             pathOpts : Object.merge( pathOpts, { config : i } ),
                             dbpath : "$testName-config$config",
-                            keyFile : keyFile
+                            keyFile : keyFile,
+                            configsvr : ""
                           }
+            
+            options = Object.merge( options, ShardingTest.configOptions || {} )
+            
+            if( otherParams.configOptions && otherParams.configOptions.binVersion ){
+                otherParams.configOptions.binVersion = 
+                    MongoRunner.versionIterator( otherParams.configOptions.binVersion )
+            }
             
             options = Object.merge( options, otherParams.configOptions )
             options = Object.merge( options, otherParams["c" + i] )
@@ -314,12 +330,17 @@ ShardingTest = function( testName , numShards , verboseLevel , numMongos , other
 
     printjson( this._configDB = this._configNames.join( "," ) )
     this._configConnection = new Mongo( this._configDB )
-    if ( ! otherParams.noChunkSize ) {
-        this._configConnection.getDB( "config" ).settings.insert( { _id : "chunksize" , value : otherParams.chunksize || otherParams.chunkSize || 50 } )
+    print( "ShardingTest " + this._testName + " :\n" + tojson( { config : this._configDB, shards : this._connections } ) );
+
+    if ( numMongos == 0 && !otherParams.noChunkSize ) {
+        if ( keyFile ) {
+            throw "Cannot set chunk size without any mongos when using auth";
+        } else {
+            this._configConnection.getDB( "config" ).settings.insert(
+                { _id : "chunksize" , value : otherParams.chunksize || otherParams.chunkSize || 50 } );
+        }
     }
 
-    print( "ShardingTest " + this._testName + " :\n" + tojson( { config : this._configDB, shards : this._connections } ) );
-    
     this._mongos = []
     this._mongoses = this._mongos
     for ( var i = 0; i < ( ( numMongos == 0 ? -1 : numMongos ) || 1 ); i++ ){
@@ -331,7 +352,17 @@ ShardingTest = function( testName , numShards , verboseLevel , numMongos , other
                         verbose : verboseLevel || 0,
                         keyFile : keyFile
                       }
+        if ( ! otherParams.noChunkSize ) {
+            options.chunkSize = otherParams.chunksize || otherParams.chunkSize || 50;
+        }
 
+        options = Object.merge( options, ShardingTest.mongosOptions || {} )
+        
+        if( otherParams.mongosOptions && otherParams.mongosOptions.binVersion ){
+            otherParams.mongosOptions.binVersion = 
+                MongoRunner.versionIterator( otherParams.mongosOptions.binVersion )
+        }
+        
         options = Object.merge( options, otherParams.mongosOptions )
         options = Object.merge( options, otherParams.extraOptions )
         options = Object.merge( options, otherParams["s" + i] )
@@ -360,6 +391,7 @@ ShardingTest = function( testName , numShards , verboseLevel , numMongos , other
                 print( "ShardingTest " + this._testName + " going to add shard : " + n )
                 x = admin.runCommand( { addshard : n } );
                 printjson( x )
+                assert( x.ok );
                 shardNames.push( x.shardAdded )
                 z.shardName = x.shardAdded
             }
@@ -367,10 +399,10 @@ ShardingTest = function( testName , numShards , verboseLevel , numMongos , other
     }
 
     if (jsTestOptions().keyFile && !keyFile) {
-        jsTest.addAuth(this._mongos[0]);
-        jsTest.authenticateNodes(this._connections);
-        jsTest.authenticateNodes(this._configServers);
-        jsTest.authenticateNodes(this._mongos);
+        jsTest.addAuth( this._configConnection );
+        jsTest.authenticate( this._configConnection );
+        jsTest.authenticateNodes( this._configServers );
+        jsTest.authenticateNodes( this._mongos );
     }
 }
 
@@ -787,6 +819,19 @@ ShardingTest.prototype.chunkDiff = function( collName , dbName ){
     return max - min;
 }
 
+// Waits up to one minute for the difference in chunks between the most loaded shard and least
+// loaded shard to be 0 or 1, indicating that the collection is well balanced.
+// This should only be called after creating a big enough chunk difference to trigger balancing.
+ShardingTest.prototype.awaitBalance = function( collName , dbName ) {
+    var shardingTest = this;
+    assert.soon( function() {
+        var x = shardingTest.chunkDiff( collName , dbName );
+        print( "chunk diff: " + x );
+        return x < 2;
+    } , "no balance happened", 60000 );
+
+}
+
 ShardingTest.prototype.getShard = function( coll, query, includeEmpty ){
     var shards = this.getShards( coll, query, includeEmpty )
     assert.eq( shards.length, 1 )
@@ -925,3 +970,26 @@ ShardingTest.prototype.startBalancer = function( timeout, interval ) {
     sh.waitForBalancer( true, timeout, interval )
     db = oldDB
 }
+
+/**
+ * Kills the mongos with index n.
+ */
+ShardingTest.prototype.stopMongos = function(n) {
+    MongoRunner.stopMongos(this['s' + n].port);
+};
+
+/**
+ * Restarts a previously stopped mongos using the same parameter as before.
+ *
+ * Warning: Overwrites the old s (if n = 0) and sn member variables
+ */
+ShardingTest.prototype.restartMongos = function(n) {
+    this.stopMongos(n);
+    var newConn = MongoRunner.runMongos(this['s' + n].commandLine);
+
+    this['s' + n] = newConn;
+    if (n == 0) {
+        this.s = newConn;
+    }
+};
+

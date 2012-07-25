@@ -19,7 +19,9 @@
 #include "db/commands/pipeline_d.h"
 
 #include "db/cursor.h"
+#include "db/queryutil.h"
 #include "db/pipeline/document_source.h"
+#include "mongo/client/dbclientinterface.h"
 
 
 namespace mongo {
@@ -50,9 +52,26 @@ namespace mongo {
 
           We create a pointer to a shared object instead of a local
           object so that we can preserve it for the Cursor we're going to
-          create below.  See DocumentSourceCursor::addBsonDependency().
+          create below.
          */
         shared_ptr<BSONObj> pQueryObj(new BSONObj(queryBuilder.obj()));
+
+        /* Look for an initial simple project; we'll avoid constructing Values
+         * for fields that won't make it through the projection.
+         */
+
+        BSONObj projection;
+        {
+            set<string> deps;
+            DocumentSource::GetDepsReturn status = DocumentSource::SEE_NEXT;
+            for (size_t i=0; i < pSources->size() && status == DocumentSource::SEE_NEXT; i++) {
+                status = (*pSources)[i]->getDependencies(deps);
+            }
+
+            if (status == DocumentSource::EXAUSTIVE) {
+                projection = DocumentSource::depsToProjection(deps);
+            }
+        }
 
         /*
           Look for an initial sort; we'll try to add this to the
@@ -88,7 +107,13 @@ namespace mongo {
             (log() << "\n---- fullName\n" <<
              fullName << "\n----\n").flush();
         }
-        
+
+        // Create the necessary context to use a Cursor, including taking a namespace read lock,
+        // see SERVER-6123.
+        // Note: this may throw if the sharding version for this connection is out of date.
+        shared_ptr<DocumentSourceCursor::CursorWithContext> cursorWithContext
+                ( new DocumentSourceCursor::CursorWithContext( fullName ) );
+
         /*
           Create the cursor.
 
@@ -109,13 +134,19 @@ namespace mongo {
           cursor.  Either way, we can then apply other optimizations there
           are tickets for, such as SERVER-4507.
          */
+
         shared_ptr<Cursor> pCursor;
         bool initSort = false;
         if (pSort) {
+            const BSONObj queryAndSort = BSON("$query" << *pQueryObj << "$orderby" << *pSortObj);
+            shared_ptr<ParsedQuery> pq (new ParsedQuery(
+                        fullName.c_str(), 0, 0, QueryOption_NoCursorTimeout, queryAndSort, projection));
+
             /* try to create the cursor with the query and the sort */
             shared_ptr<Cursor> pSortedCursor(
                 pCursor = NamespaceDetailsTransient::getCursor(
-                    fullName.c_str(), *pQueryObj, *pSortObj));
+                    fullName.c_str(), *pQueryObj, *pSortObj,
+                    QueryPlanSelectionPolicy::any(), NULL, pq));
 
             if (pSortedCursor.get()) {
                 /* success:  remove the sort from the pipeline */
@@ -127,17 +158,25 @@ namespace mongo {
         }
 
         if (!pCursor.get()) {
+            shared_ptr<ParsedQuery> pq (new ParsedQuery(
+                        fullName.c_str(), 0, 0, QueryOption_NoCursorTimeout, *pQueryObj, projection));
+
             /* try to create the cursor without the sort */
             shared_ptr<Cursor> pUnsortedCursor(
                 pCursor = NamespaceDetailsTransient::getCursor(
-                    fullName.c_str(), *pQueryObj));
+                    fullName.c_str(), *pQueryObj, BSONObj(),
+                    QueryPlanSelectionPolicy::any(), NULL, pq));
 
             pCursor = pUnsortedCursor;
         }
 
+        // Now add the Cursor to cursorWithContext.
+        cursorWithContext->_cursor.reset
+                ( new ClientCursor( QueryOption_NoCursorTimeout, pCursor, fullName ) );
+
         /* wrap the cursor with a DocumentSource and return that */
         intrusive_ptr<DocumentSourceCursor> pSource(
-            DocumentSourceCursor::create(pCursor, dbName, pExpCtx));
+            DocumentSourceCursor::create( cursorWithContext, pExpCtx ) );
 
         pSource->setNamespace(fullName);
 
@@ -151,6 +190,9 @@ namespace mongo {
         pSource->setQuery(pQueryObj);
         if (initSort)
             pSource->setSort(pSortObj);
+
+        if (!projection.isEmpty())
+            pSource->setProjection(projection);
 
         return pSource;
     }

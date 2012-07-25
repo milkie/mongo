@@ -20,25 +20,26 @@
 
 #include <boost/unordered_map.hpp>
 #include "util/intrusive_counter.h"
-#include "client/parallel.h"
 #include "db/clientcursor.h"
 #include "db/jsobj.h"
-#include "db/pipeline/dependency_tracker.h"
 #include "db/pipeline/document.h"
 #include "db/pipeline/expression.h"
+#include "mongo/db/pipeline/expression_context.h"
 #include "db/pipeline/value.h"
 #include "util/string_writer.h"
+#include "mongo/db/projection.h"
 
 namespace mongo {
     class Accumulator;
     class Cursor;
-    class DependencyTracker;
     class Document;
     class Expression;
     class ExpressionContext;
     class ExpressionFieldPath;
     class ExpressionObject;
     class Matcher;
+    class Shard;
+    class ShardChunkManager;
 
     class DocumentSource :
         public IntrusiveCounterUnsigned,
@@ -95,6 +96,15 @@ namespace mongo {
         virtual intrusive_ptr<Document> getCurrent() = 0;
 
         /**
+         * Inform the source that it is no longer needed and may release its resources.  After
+         * dispose() is called the source must still be able to handle iteration requests, but may
+         * become eof().
+         * NOTE: For proper mutex yielding, dispose() must be called on any DocumentSource that will
+         * not be advanced until eof(), see SERVER-6123.
+         */
+        virtual void dispose();
+
+        /**
            Get the source's name.
 
            @returns the string name of the source as a constant string;
@@ -147,14 +157,25 @@ namespace mongo {
          */
         virtual void optimize();
 
-        /**
-           Adjust dependencies according to the needs of this source.
+        enum GetDepsReturn {
+            NOT_SUPPORTED, // This means the set should be ignored
+            EXAUSTIVE, // This means that everything needed should be in the set
+            SEE_NEXT, // Add the next Source's deps to the set
+        };
 
-           $$$ MONGO_LATER_SERVER_4644
-           @param pTracker the dependency tracker
+        /** Get the fields this operation needs to do it's job.
+         *  Deps should be in "a.b.c" notation
+         *
+         *  @param deps results are added here. NOT CLEARED
          */
-        virtual void manageDependencies(
-            const intrusive_ptr<DependencyTracker> &pTracker);
+        virtual GetDepsReturn getDependencies(set<string>& deps) const {
+            return NOT_SUPPORTED;
+        }
+
+        /** This takes dependencies from getDependencies and
+         *  returns a projection that includes all of them
+         */
+        static BSONObj depsToProjection(const set<string>& deps);
 
         /**
           Add the DocumentSource to the array builder.
@@ -214,6 +235,24 @@ namespace mongo {
         long long nRowsOut;
     };
 
+    /** This class marks DocumentSources that should be split between the router and the shards
+     *  See Pipeline::splitForSharded() for details
+     */
+    class SplittableDocumentSource : public DocumentSource {
+    public:
+        /** returns a source to be run on the shards.
+         *  if NULL, don't run on shards
+         */
+        virtual intrusive_ptr<DocumentSource> getShardSource() = 0;
+
+        /** returns a source that combines results from shards.
+         *  if NULL, don't run on router
+         */
+        virtual intrusive_ptr<DocumentSource> getRouterSource() = 0;
+    protected:
+        SplittableDocumentSource(intrusive_ptr<ExpressionContext> ctx) :DocumentSource(ctx) {}
+    };
+
 
     class DocumentSourceBsonArray :
         public DocumentSource {
@@ -258,39 +297,37 @@ namespace mongo {
     };
 
     
-    class DocumentSourceCommandFutures :
+    class DocumentSourceCommandShards :
         public DocumentSource {
     public:
         // virtuals from DocumentSource
-        virtual ~DocumentSourceCommandFutures();
+        virtual ~DocumentSourceCommandShards();
         virtual bool eof();
         virtual bool advance();
         virtual intrusive_ptr<Document> getCurrent();
         virtual void setSource(DocumentSource *pSource);
 
         /* convenient shorthand for a commonly used type */
-        typedef list<shared_ptr<Future::CommandResult> > FuturesList;
+        typedef map<Shard, BSONObj> ShardOutput;
 
         /**
-          Create a DocumentSource that wraps a list of Command::Futures.
+          Create a DocumentSource that wraps the output of many shards
 
-          @param errmsg place to write error messages to; must exist for the
-            lifetime of the created DocumentSourceCommandFutures
-          @param pList the list of futures
+          @param shardOutput output from the individual shards
           @param pExpCtx the expression context for the pipeline
           @returns the newly created DocumentSource
          */
-        static intrusive_ptr<DocumentSourceCommandFutures> create(
-            string &errmsg, FuturesList *pList,
-            const intrusive_ptr<ExpressionContext> &pExpCtx);
+        static intrusive_ptr<DocumentSourceCommandShards> create(
+            const ShardOutput& shardOutput,
+            const intrusive_ptr<ExpressionContext>& pExpCtx);
 
     protected:
         // virtuals from DocumentSource
         virtual void sourceToBson(BSONObjBuilder *pBuilder, bool explain) const;
 
     private:
-        DocumentSourceCommandFutures(string &errmsg, FuturesList *pList,
-            const intrusive_ptr<ExpressionContext> &pExpCtx);
+        DocumentSourceCommandShards(const ShardOutput& shardOutput,
+            const intrusive_ptr<ExpressionContext>& pExpCtx);
 
         /**
           Advance to the next document, setting pCurrent appropriately.
@@ -304,23 +341,46 @@ namespace mongo {
         bool newSource; // set to true for the first item of a new source
         intrusive_ptr<DocumentSourceBsonArray> pBsonSource;
         intrusive_ptr<Document> pCurrent;
-        FuturesList::iterator iterator;
-        FuturesList::iterator listEnd;
-        string &errmsg;
+        ShardOutput::const_iterator iterator;
+        ShardOutput::const_iterator listEnd;
     };
 
 
+    /**
+     * Constructs and returns Documents from the BSONObj objects produced by a supplied Cursor.
+     * An object of this type may only be used by one thread, see SERVER-6123.
+     */
     class DocumentSourceCursor :
         public DocumentSource {
     public:
+        /**
+         * Holds a Cursor and all associated state required to access the cursor.  An object of this
+         * type may only be used by one thread.
+         */
+        struct CursorWithContext {
+            /** Takes a read lock that will be held for the lifetime of the object. */
+            CursorWithContext( const string& ns );
+
+            // Must be the first struct member for proper construction and destruction, as other
+            // members may depend on the read lock it acquires.
+            Client::ReadContext _readContext;
+            shared_ptr<ShardChunkManager> _chunkMgr;
+            ClientCursor::Holder _cursor;
+        };
+
         // virtuals from DocumentSource
         virtual ~DocumentSourceCursor();
         virtual bool eof();
         virtual bool advance();
         virtual intrusive_ptr<Document> getCurrent();
         virtual void setSource(DocumentSource *pSource);
-        virtual void manageDependencies(
-            const intrusive_ptr<DependencyTracker> &pTracker);
+
+        /**
+         * Release the Cursor and the read lock it requires, but without changing the other data.
+         * Releasing the lock is required for proper concurrency, see SERVER-6123.  This
+         * functionality is also used by the explain version of pipeline execution.
+         */
+        virtual void dispose();
 
         /**
           Create a document source based on a cursor.
@@ -332,8 +392,7 @@ namespace mongo {
           @param pExpCtx the expression context for the pipeline
         */
         static intrusive_ptr<DocumentSourceCursor> create(
-            const shared_ptr<Cursor> &pCursor,
-            const string &ns,
+            const shared_ptr<CursorWithContext>& cursorWithContext,
             const intrusive_ptr<ExpressionContext> &pExpCtx);
 
         /*
@@ -369,82 +428,47 @@ namespace mongo {
          */
         void setSort(const shared_ptr<BSONObj> &pBsonObj);
 
-        /**
-           Release the cursor, but without changing the other data.  This
-           is used for the explain version of pipeline execution.
-         */
-        void releaseCursor();
-
+        void setProjection(BSONObj projection);
     protected:
         // virtuals from DocumentSource
         virtual void sourceToBson(BSONObjBuilder *pBuilder, bool explain) const;
 
     private:
         DocumentSourceCursor(
-            const shared_ptr<Cursor> &pTheCursor, const string &ns,
+            const shared_ptr<CursorWithContext>& cursorWithContext,
             const intrusive_ptr<ExpressionContext> &pExpCtx);
 
         void findNext();
+
         intrusive_ptr<Document> pCurrent;
 
         string ns; // namespace
 
         /*
-          The bsonDependencies must outlive the Cursor wrapped by this
-          source.  Therefore, bsonDependencies must appear before pCursor
+          The bson dependencies must outlive the Cursor wrapped by this
+          source.  Therefore, bson dependencies must appear before pCursor
           in order cause its destructor to be called *after* pCursor's.
          */
         shared_ptr<BSONObj> pQuery;
         shared_ptr<BSONObj> pSort;
-        vector<shared_ptr<BSONObj> > bsonDependencies;
-        shared_ptr<Cursor> pCursor;
+        shared_ptr<Projection> _projection; // shared with pClientCursor
+
+        shared_ptr<CursorWithContext> _cursorWithContext;
+
+        ClientCursor::Holder& cursor();
+        const ShardChunkManager* chunkMgr() { return _cursorWithContext->_chunkMgr.get(); }
+
+        bool canUseCoveredIndex();
 
         /*
-          In order to yield, we need a ClientCursor.
-         */
-        ClientCursor::Holder pClientCursor;
-
-        /*
-          Advance the cursor, and yield sometimes.
+          Yield the cursor sometimes.
 
           If the state of the world changed during the yield such that we
           are unable to continue execution of the query, this will release the
-          client cursor, and throw an error.
+          client cursor, and throw an error.  NOTE This differs from the
+          behavior of most other operations, see SERVER-2454.
          */
-        void advanceAndYield();
-
-        /*
-          This document source hangs on to the dependency tracker when it
-          gets it so that it can be used for selective reification of
-          fields in order to avoid fields that are not required through the
-          pipeline.
-         */
-        intrusive_ptr<DependencyTracker> pDependencies;
-
-        /**
-           (5/14/12 - moved this to private because it's not used atm)
-           Add a BSONObj dependency.
-
-           Some Cursor creation functions rely on BSON objects to specify
-           their query predicate or sort.  These often take a BSONObj
-           by reference for these, but do not copy it.  As a result, the
-           BSONObjs specified must outlive the Cursor.  In order to ensure
-           that, use this to preserve a pointer to the BSONObj here.
-
-           From the outside, you must also make sure the BSONObjBuilder
-           creates a lasting copy of the data, otherwise it will go away
-           when the builder goes out of scope.  Therefore, the typical usage
-           pattern for this is 
-           {
-               BSONObjBuilder builder;
-               // do stuff to the builder
-               shared_ptr<BSONObj> pBsonObj(new BSONObj(builder.obj()));
-               pDocumentSourceCursor->addBsonDependency(pBsonObj);
-           }
-
-           @param pBsonObj pointer to the BSON object to preserve
-         */
-        void addBsonDependency(const shared_ptr<BSONObj> &pBsonObj);
+        void yieldSometimes();
     };
 
 
@@ -561,7 +585,7 @@ namespace mongo {
 
 
     class DocumentSourceGroup :
-        public DocumentSource {
+        public SplittableDocumentSource {
     public:
         // virtuals from DocumentSource
         virtual ~DocumentSourceGroup();
@@ -569,6 +593,7 @@ namespace mongo {
         virtual bool advance();
         virtual const char *getSourceName() const;
         virtual intrusive_ptr<Document> getCurrent();
+        virtual GetDepsReturn getDependencies(set<string>& deps) const;
 
         /**
           Create a new grouping DocumentSource.
@@ -622,14 +647,9 @@ namespace mongo {
             BSONElement *pBsonElement,
             const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-
-        /**
-          Create a unifying group that can be used to combine group results
-          from shards.
-
-          @returns the grouping DocumentSource
-        */
-        intrusive_ptr<DocumentSource> createMerger();
+        // Virtuals for SplittableDocumentSource
+        virtual intrusive_ptr<DocumentSource> getShardSource();
+        virtual intrusive_ptr<DocumentSource> getRouterSource();
 
         static const char groupName[];
 
@@ -687,8 +707,6 @@ namespace mongo {
         // virtuals from DocumentSource
         virtual ~DocumentSourceMatch();
         virtual const char *getSourceName() const;
-        virtual void manageDependencies(
-            const intrusive_ptr<DependencyTracker> &pTracker);
 
         /**
           Create a filter.
@@ -776,43 +794,8 @@ namespace mongo {
         virtual const char *getSourceName() const;
         virtual intrusive_ptr<Document> getCurrent();
         virtual void optimize();
-        virtual void manageDependencies(
-            const intrusive_ptr<DependencyTracker> &pTracker);
 
-        /**
-          Create a new DocumentSource that can implement projection.
-
-          @param pExpCtx the expression context for the pipeline
-          @returns the projection DocumentSource
-        */
-        static intrusive_ptr<DocumentSourceProject> create(
-            const intrusive_ptr<ExpressionContext> &pExpCtx);
-
-        /**
-          Include a field path in a projection.
-
-          @param fieldPath the path of the field to include
-        */
-        void includePath(const string &fieldPath);
-
-        /**
-          Exclude a field path from the projection.
-
-          @param fieldPath the path of the field to exclude
-         */
-        void excludePath(const string &fieldPath);
-
-        /**
-          Add an output Expression in the projection.
-
-          BSON document fields are ordered, so the new field will be
-          appended to the existing set.
-
-          @param fieldName the name of the field as it will appear
-          @param pExpression the expression used to compute the field
-        */
-        void addField(const string &fieldName,
-                      const intrusive_ptr<Expression> &pExpression);
+        virtual GetDepsReturn getDependencies(set<string>& deps) const;
 
         /**
           Create a new projection DocumentSource from BSON.
@@ -830,6 +813,9 @@ namespace mongo {
 
         static const char projectName[];
 
+        /** projection as specified by the user */
+        BSONObj getRaw() const { return _raw; }
+
     protected:
         // virtuals from DocumentSource
         virtual void sourceToBson(BSONObjBuilder *pBuilder, bool explain) const;
@@ -838,72 +824,18 @@ namespace mongo {
         DocumentSourceProject(const intrusive_ptr<ExpressionContext> &pExpCtx);
 
         // configuration state
-        bool excludeId;
         intrusive_ptr<ExpressionObject> pEO;
+        BSONObj _raw;
 
-        /*
-          Utility object used by manageDependencies().
-
-          Removes dependencies from a DependencyTracker.
-         */
-        class DependencyRemover :
-            public ExpressionObject::PathSink {
-        public:
-            // virtuals from PathSink
-            virtual void path(const string &path, bool include);
-
-            /*
-              Constructor.
-
-              Captures a reference to the smart pointer to the DependencyTracker
-              that this will remove dependencies from via
-              ExpressionObject::emitPaths().
-
-              @param pTracker reference to the smart pointer to the
-                DependencyTracker
-             */
-            DependencyRemover(const intrusive_ptr<DependencyTracker> &pTracker);
-
-        private:
-            const intrusive_ptr<DependencyTracker> &pTracker;
-        };
-
-        /*
-          Utility object used by manageDependencies().
-
-          Checks dependencies to see if they are present.  If not, then
-          throws a user error.
-         */
-        class DependencyChecker :
-            public ExpressionObject::PathSink {
-        public:
-            // virtuals from PathSink
-            virtual void path(const string &path, bool include);
-
-            /*
-              Constructor.
-
-              Captures a reference to the smart pointer to the DependencyTracker
-              that this will check dependencies from from
-              ExpressionObject::emitPaths() to see if they are required.
-
-              @param pTracker reference to the smart pointer to the
-                DependencyTracker
-              @param pThis the projection that is making this request
-             */
-            DependencyChecker(
-                const intrusive_ptr<DependencyTracker> &pTracker,
-                const DocumentSourceProject *pThis);
-
-        private:
-            const intrusive_ptr<DependencyTracker> &pTracker;
-            const DocumentSourceProject *pThis;
-        };
+#if defined(_DEBUG)
+        // this is used in DEBUG builds to ensure we are compatible
+        Projection _simpleProjection;
+#endif
     };
 
 
     class DocumentSourceSort :
-        public DocumentSource {
+        public SplittableDocumentSource {
     public:
         // virtuals from DocumentSource
         virtual ~DocumentSourceSort();
@@ -911,8 +843,9 @@ namespace mongo {
         virtual bool advance();
         virtual const char *getSourceName() const;
         virtual intrusive_ptr<Document> getCurrent();
-        virtual void manageDependencies(
-            const intrusive_ptr<DependencyTracker> &pTracker);
+
+        virtual GetDepsReturn getDependencies(set<string>& deps) const;
+
         /*
           TODO
           Adjacent sorts should reduce to the last sort.
@@ -927,6 +860,13 @@ namespace mongo {
          */
         static intrusive_ptr<DocumentSourceSort> create(
             const intrusive_ptr<ExpressionContext> &pExpCtx);
+
+        // Virtuals for SplittableDocumentSource
+        // All work for sort is done in router currently
+        // TODO: do partial sorts on the shards then merge in the router
+        //       Not currently possible due to DocumentSource's cursor-like interface
+        virtual intrusive_ptr<DocumentSource> getShardSource() { return NULL; }
+        virtual intrusive_ptr<DocumentSource> getRouterSource() { return this; }
 
         /**
           Add sort key field.
@@ -981,7 +921,6 @@ namespace mongo {
          */
         void populate();
         bool populated;
-        long long count;
 
         /* these two parallel each other */
         typedef vector<intrusive_ptr<ExpressionFieldPath> > SortPaths;
@@ -1038,6 +977,10 @@ namespace mongo {
         virtual const char *getSourceName() const;
         virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
 
+        virtual GetDepsReturn getDependencies(set<string>& deps) const {
+            return SEE_NEXT; // This doesn't affect needed fields
+        }
+
         /**
           Create a new limiting DocumentSource.
 
@@ -1061,7 +1004,6 @@ namespace mongo {
         static intrusive_ptr<DocumentSource> createFromBson(
             BSONElement *pBsonElement,
             const intrusive_ptr<ExpressionContext> &pExpCtx);
-
 
         static const char limitName[];
 
@@ -1089,6 +1031,10 @@ namespace mongo {
         virtual const char *getSourceName() const;
         virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
 
+        virtual GetDepsReturn getDependencies(set<string>& deps) const {
+            return SEE_NEXT; // This doesn't affect needed fields
+        }
+
         /**
           Create a new skipping DocumentSource.
 
@@ -1112,7 +1058,6 @@ namespace mongo {
         static intrusive_ptr<DocumentSource> createFromBson(
             BSONElement *pBsonElement,
             const intrusive_ptr<ExpressionContext> &pExpCtx);
-
 
         static const char skipName[];
 
@@ -1143,25 +1088,8 @@ namespace mongo {
         virtual bool advance();
         virtual const char *getSourceName() const;
         virtual intrusive_ptr<Document> getCurrent();
-        virtual void manageDependencies(
-            const intrusive_ptr<DependencyTracker> &pTracker);
 
-        /**
-          Create a new DocumentSource that can implement unwind.
-
-          @param pExpCtx the expression context for the pipeline
-          @returns the projection DocumentSource
-        */
-        static intrusive_ptr<DocumentSourceUnwind> create(
-            const intrusive_ptr<ExpressionContext> &pExpCtx);
-
-        /**
-          Specify the field to unwind.  There must be exactly one before
-          the pipeline begins execution.
-
-          @param rFieldPath - path to the field to unwind
-        */
-        void unwindField(const FieldPath &rFieldPath);
+        virtual GetDepsReturn getDependencies(set<string>& deps) const;
 
         /**
           Create a new projection DocumentSource from BSON.
@@ -1186,40 +1114,27 @@ namespace mongo {
     private:
         DocumentSourceUnwind(const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-        // configuration state
-        FieldPath unwindPath;
-
-        vector<int> fieldIndex; /* for the current document, the indices
-                                   leading down to the field being unwound */
-
-        // iteration state
-        intrusive_ptr<Document> pNoUnwindDocument;
-                                              // document to return, pre-unwind
-        intrusive_ptr<const Value> pUnwindArray; // field being unwound
-        intrusive_ptr<ValueIterator> pUnwinder; // iterator used for unwinding
-        intrusive_ptr<const Value> pUnwindValue; // current value
-
-        /*
-          Clear all the state related to unwinding an array.
+        /**
+         * Lazily construct the _unwinder and initialize the iterator state of this DocumentSource.
+         * To be called by all members that depend on the iterator state.
          */
-        void resetArray();
+        void lazyInit();
 
-        /*
-          Clone the current document being unwound.
-
-          This is a partial deep clone.  Because we're going to replace the
-          value at the end, we have to replace everything along the path
-          leading to that in order to not share that change with any other
-          clones (or the original) that we've made.
-
-          This expects pUnwindValue to have been set by a prior call to
-          advance().  However, pUnwindValue may also be NULL, in which case
-          the field will be removed -- this is the action for an empty
-          array.
-
-          @returns a partial deep clone of pNoUnwindDocument
+        /**
+         * If the _unwinder is exhausted and the source may be advanced, advance the pSource and
+         * reset the _unwinder's source document.
          */
-        intrusive_ptr<Document> clonePath() const;
+        void mayAdvanceSource();
+
+        /** Specify the field to unwind. */
+        void unwindPath(const FieldPath &fieldPath);
+
+        // Configuration state.
+        FieldPath _unwindPath;
+
+        // Iteration state.
+        class Unwinder;
+        scoped_ptr<Unwinder> _unwinder;
     };
 
 }
@@ -1241,24 +1156,4 @@ namespace mongo {
         const intrusive_ptr<Expression> &pExpression) {
         pIdExpression = pExpression;
     }
-
-    inline DocumentSourceProject::DependencyRemover::DependencyRemover(
-        const intrusive_ptr<DependencyTracker> &pT):
-        pTracker(pT) {
-    }
-
-    inline DocumentSourceProject::DependencyChecker::DependencyChecker(
-        const intrusive_ptr<DependencyTracker> &pTrack,
-        const DocumentSourceProject *pT):
-        pTracker(pTrack),
-        pThis(pT) {
-    }
-
-    inline void DocumentSourceUnwind::resetArray() {
-        pNoUnwindDocument.reset();
-        pUnwindArray.reset();
-        pUnwinder.reset();
-        pUnwindValue.reset();
-    }
-
 }

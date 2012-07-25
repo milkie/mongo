@@ -125,8 +125,7 @@ namespace mongo {
         _desc(desc),
         _god(0),
         _lastOp(0),
-        _mp(p),
-        _sometimes(0)
+        _mp(p)
     {
         _hasWrittenThisPass = false;
         _pageFaultRetryableSection = 0;
@@ -476,12 +475,12 @@ namespace mongo {
             ss << "\n<table border=1 cellpadding=2 cellspacing=0>";
             ss << "<tr align='left'>"
                << th( a("", "Connections to the database, both internal and external.", "Client") )
-               << th( a("http://www.mongodb.org/display/DOCS/Viewing+and+Terminating+Current+Operation", "", "OpId") )
+               << th( a("http://dochub.mongodb.org/core/viewingandterminatingcurrentoperation", "", "OpId") )
                << "<th>Locking</th>"
                << "<th>Waiting</th>"
                << "<th>SecsRunning</th>"
                << "<th>Op</th>"
-               << th( a("http://www.mongodb.org/display/DOCS/Developer+FAQ#DeveloperFAQ-What%27sa%22namespace%22%3F", "", "Namespace") )
+               << th( a("http://dochub.mongodb.org/core/whatisanamespace", "", "Namespace") )
                << "<th>Query</th>"
                << "<th>client</th>"
                << "<th>msg</th>"
@@ -524,7 +523,7 @@ namespace mongo {
 
     } clientListPlugin;
 
-    int Client::recommendedYieldMicros( int * writers , int * readers ) {
+    int Client::recommendedYieldMicros( int * writers , int * readers, bool needExact ) {
         int num = 0;
         int w = 0;
         int r = 0;
@@ -539,6 +538,8 @@ namespace mongo {
                     else
                         r++;
                 }
+                if (num > 100 && !needExact)
+                    break;
             }
         }
 
@@ -547,8 +548,8 @@ namespace mongo {
         if ( readers )
             *readers = r;
 
-        int time = r * 100;
-        time += w * 500;
+        int time = r * 10; // we have to be nice to readers since they don't have priority
+        time += w; // writers are greedy, so we can be mean tot hem
 
         time = min( time , 1000000 );
 
@@ -723,7 +724,7 @@ namespace mongo {
         OPDEBUG_APPEND_NUMBER( keyUpdates );
 
         b.appendNumber( "numYield" , curop.numYields() );
-        b.append( "lockStatMillis" , curop.lockStat().report() );
+        b.append( "lockStats" , curop.lockStat().report() );
         
         if ( ! exceptionInfo.empty() ) 
             exceptionInfo.append( b , "exception" , "exceptionCode" );

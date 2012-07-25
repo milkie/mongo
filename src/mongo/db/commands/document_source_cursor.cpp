@@ -18,21 +18,21 @@
 
 #include "mongo/db/pipeline/document_source.h"
 
-#include "mongo/client/dbclientcursor.h"
 #include "mongo/db/clientcursor.h"
-#include "mongo/db/cursor.h"
 #include "mongo/db/instance.h"
 #include "mongo/db/pipeline/document.h"
+#include "mongo/s/d_logic.h"
 
 namespace mongo {
 
-    DocumentSourceCursor::~DocumentSourceCursor() {
-    }
+    DocumentSourceCursor::CursorWithContext::CursorWithContext( const string& ns )
+        : _readContext( ns ) // Take a read lock.
+        , _chunkMgr(shardingState.needShardChunkManager( ns )
+                    ? shardingState.getShardChunkManager( ns )
+                    : ShardChunkManagerPtr())
+    {}
 
-    void DocumentSourceCursor::releaseCursor() {
-        // note the order here; the cursor holder has to go first
-        pClientCursor.reset();
-        pCursor.reset();
+    DocumentSourceCursor::~DocumentSourceCursor() {
     }
 
     bool DocumentSourceCursor::eof() {
@@ -62,42 +62,87 @@ namespace mongo {
         return pCurrent;
     }
 
-    void DocumentSourceCursor::advanceAndYield() {
-        pCursor->advance();
-        /*
-          TODO ask for index key pattern in order to determine which index
-          was used for this particular document; that will allow us to
-          sometimes use ClientCursor::MaybeCovered.
-          See https://jira.mongodb.org/browse/SERVER-5224 .
-        */
-        bool cursorOk = pClientCursor->yieldSometimes(ClientCursor::WillNeed);
-        if (!cursorOk) {
-            uassert(16028,
-                    "collection or database disappeared when cursor yielded",
-                    false);
+    void DocumentSourceCursor::dispose() {
+        _cursorWithContext.reset();
+    }
+
+    ClientCursor::Holder& DocumentSourceCursor::cursor() {
+        verify( _cursorWithContext );
+        verify( _cursorWithContext->_cursor );
+        return _cursorWithContext->_cursor;
+    }
+
+    bool DocumentSourceCursor::canUseCoveredIndex() {
+        // We can't use a covered index when we have a chunk manager because we
+        // need to examine the object to see if it belongs on this shard
+        return (!chunkMgr() &&
+                cursor()->ok() && cursor()->c()->keyFieldsOnly());
+    }
+
+    void DocumentSourceCursor::yieldSometimes() {
+        try { // SERVER-5752 may make this try unnecessary
+            // if we are index only we don't need the recored
+            bool cursorOk = cursor()->yieldSometimes(canUseCoveredIndex()
+                                                     ? ClientCursor::DontNeed
+                                                     : ClientCursor::WillNeed);
+            uassert( 16028, "collection or database disappeared when cursor yielded", cursorOk );
+        }
+        catch(SendStaleConfigException& e){
+            // We want to ignore this because the migrated documents will be filtered out of the
+            // cursor anyway and, we don't want to restart the aggregation after every migration.
+
+            log() << "Config changed during aggregation - command will resume" << endl;
+            // useful for debugging but off by default to avoid looking like a scary error.
+            LOG(1) << "aggregation stale config exception: " << e.what() << endl;
         }
     }
 
     void DocumentSourceCursor::findNext() {
-        /* standard cursor usage pattern */
-        while(pCursor->ok()) {
-            CoveredIndexMatcher *pCIM; // save intermediate result
-            if ((!(pCIM = pCursor->matcher()) ||
-                 pCIM->matchesCurrent(pCursor.get())) &&
-                !pCursor->getsetdup(pCursor->currLoc())) {
 
-                /* grab the matching document */
-                BSONObj documentObj(pCursor->current());
-                pCurrent = Document::createFromBsonObj(
-                    &documentObj, NULL /* LATER pDependencies.get()*/);
-                advanceAndYield();
-                return;
-            }
-
-            advanceAndYield();
+        if ( !_cursorWithContext ) {
+            pCurrent.reset();
+            return;
         }
 
-        /* if we got here, there aren't any more documents */
+        for( ; cursor()->ok(); cursor()->advance() ) {
+
+            yieldSometimes();
+            if ( !cursor()->ok() ) {
+                // The cursor was exhausted during the yield.
+                break;
+            }
+
+            if ( !cursor()->currentMatches() || cursor()->currentIsDup() )
+                continue;
+
+            // grab the matching document
+            BSONObj documentObj;
+            if (canUseCoveredIndex()) {
+                // Can't have a Chunk Manager if we are here
+                documentObj = cursor()->c()->keyFieldsOnly()->hydrate(cursor()->currKey());
+            }
+            else {
+                documentObj = cursor()->current();
+
+                // check to see if this is a new object we don't own yet
+                // because of a chunk migration
+                if ( chunkMgr() && ! chunkMgr()->belongsToMe(documentObj) )
+                    continue;
+
+                if (_projection) {
+                    documentObj = _projection->transform(documentObj);
+                }
+            }
+
+            pCurrent = Document::createFromBsonObj(&documentObj);
+
+            cursor()->advance();
+            return;
+        }
+
+        // If we got here, there aren't any more documents.
+        // The CursorWithContext (and its read lock) must be released, see SERVER-6123.
+        dispose();
         pCurrent.reset();
     }
 
@@ -121,6 +166,12 @@ namespace mongo {
                 pBuilder->append("sort", *pSort);
             }
 
+            BSONObj projectionSpec;
+            if (_projection) {
+                projectionSpec = _projection->getSpec();
+                pBuilder->append("projection", projectionSpec);
+            }
+
             // construct query for explain
             BSONObjBuilder queryBuilder;
             queryBuilder.append("$query", *pQuery);
@@ -130,34 +181,30 @@ namespace mongo {
             Query query(queryBuilder.obj());
 
             DBDirectClient directClient;
-            BSONObj explainResult(directClient.findOne(ns, query));
+            BSONObj explainResult(directClient.findOne(ns, query, _projection
+                                                                  ? &projectionSpec
+                                                                  : NULL));
 
             pBuilder->append("cursor", explainResult);
         }
     }
 
     DocumentSourceCursor::DocumentSourceCursor(
-        const shared_ptr<Cursor> &pTheCursor,
-        const string &ns,
+        const shared_ptr<CursorWithContext>& cursorWithContext,
         const intrusive_ptr<ExpressionContext> &pCtx):
         DocumentSource(pCtx),
         pCurrent(),
-        bsonDependencies(),
-        pCursor(pTheCursor),
-        pClientCursor(),
-        pDependencies() {
-        pClientCursor.reset(
-            new ClientCursor(QueryOption_NoCursorTimeout, pTheCursor, ns));
-    }
+        _cursorWithContext( cursorWithContext )
+    {}
 
     intrusive_ptr<DocumentSourceCursor> DocumentSourceCursor::create(
-        const shared_ptr<Cursor> &pCursor,
-        const string &ns,
+        const shared_ptr<CursorWithContext>& cursorWithContext,
         const intrusive_ptr<ExpressionContext> &pExpCtx) {
-        verify(pCursor.get());
+        verify( cursorWithContext );
+        verify( cursorWithContext->_cursor );
         intrusive_ptr<DocumentSourceCursor> pSource(
-            new DocumentSourceCursor(pCursor, ns, pExpCtx));
-            return pSource;
+            new DocumentSourceCursor( cursorWithContext, pExpCtx ) );
+        return pSource;
     }
 
     void DocumentSourceCursor::setNamespace(const string &n) {
@@ -172,15 +219,10 @@ namespace mongo {
         pSort = pBsonObj;
     }
 
-    void DocumentSourceCursor::addBsonDependency(
-        const shared_ptr<BSONObj> &pBsonObj) {
-        bsonDependencies.push_back(pBsonObj);
+    void DocumentSourceCursor::setProjection(BSONObj projection) {
+        verify(!_projection);
+        _projection.reset(new Projection);
+        _projection->init(projection);
+        cursor()->fields = _projection;
     }
-
-    void DocumentSourceCursor::manageDependencies(
-        const intrusive_ptr<DependencyTracker> &pTracker) {
-        /* hang on to the tracker */
-        pDependencies = pTracker;
-    }
-
 }

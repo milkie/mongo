@@ -74,7 +74,7 @@ namespace mongo {
             break;
 
         case Timestamp:
-            simple.timestampValue = 0;
+            timestampValue = OpTime();
             break;
 
         case NumberLong:
@@ -84,7 +84,7 @@ namespace mongo {
         default:
             // nothing else is allowed
             uassert(16001, str::stream() <<
-                    "can't create empty Value of type " << type, false);
+                    "can't create empty Value of type " << typeName(type), false);
             break;
         }
     }
@@ -98,8 +98,20 @@ namespace mongo {
 
     intrusive_ptr<const Value> Value::createFromBsonElement(
         BSONElement *pBsonElement) {
-        intrusive_ptr<const Value> pValue(new Value(pBsonElement));
-        return pValue;
+        switch (pBsonElement->type()) {
+            case Undefined:
+                return getUndefined();
+            case jstNULL:
+                return getNull();
+            case Bool:
+                if (pBsonElement->boolean())
+                    return getTrue();
+                else
+                    return getFalse();
+            default:
+                intrusive_ptr<const Value> pValue(new Value(pBsonElement));
+                return pValue;
+        }
     }
 
     Value::Value(BSONElement *pBsonElement):
@@ -156,13 +168,14 @@ namespace mongo {
             break;
 
         case Timestamp:
-            dateValue = pBsonElement->timestampTime();
+            timestampValue = pBsonElement->_opTime();
             break;
 
         case NumberLong:
             simple.longValue = pBsonElement->numberLong();
             break;
 
+        case Undefined:
         case jstNULL:
             break;
 
@@ -173,12 +186,11 @@ namespace mongo {
             /* these shouldn't happen in this context */
         case MinKey:
         case EOO:
-        case Undefined:
         case DBRef:
         case Code:
         case MaxKey:
             uassert(16002, str::stream() <<
-                    "can't create Value of BSON type " << type, false);
+                    "can't create Value of BSON type " << typeName(type), false);
             break;
         }
     }
@@ -227,6 +239,18 @@ namespace mongo {
     }
 
     intrusive_ptr<const Value> Value::createDate(const Date_t &value) {
+        intrusive_ptr<const Value> pValue(new Value(value));
+        return pValue;
+    }
+
+    Value::Value(const OpTime& value):
+        type(Timestamp),
+        pDocumentValue(),
+        vpValue() {
+        timestampValue = value;
+    }
+
+    intrusive_ptr<const Value> Value::createTimestamp(const OpTime& value) {
         intrusive_ptr<const Value> pValue(new Value(value));
         return pValue;
     }
@@ -332,6 +356,11 @@ namespace mongo {
         return dateValue;
     }
 
+    OpTime Value::getTimestamp() const {
+        verify(getType() == Timestamp);
+        return timestampValue;
+    }
+
     string Value::getRegex() const {
         verify(getType() == RegEx);
         return stringValue;
@@ -345,11 +374,6 @@ namespace mongo {
     int Value::getInt() const {
         verify(getType() == NumberInt);
         return simple.intValue;
-    }
-
-    unsigned long long Value::getTimestamp() const {
-        verify(getType() == Timestamp);
-        return dateValue;
     }
 
     long long Value::getLong() const {
@@ -425,11 +449,15 @@ namespace mongo {
             break;
 
         case Timestamp:
-            pBuilder->append((long long)getTimestamp());
+            pBuilder->append(getTimestamp());
             break;
 
         case NumberLong:
             pBuilder->append(getLong());
+            break;
+
+        case Undefined:
+            pBuilder->appendUndefined();
             break;
 
         case jstNULL:
@@ -439,7 +467,6 @@ namespace mongo {
             /* these shouldn't appear in this context */
         case MinKey:
         case EOO:
-        case Undefined:
         case DBRef:
         case Code:
         case MaxKey:
@@ -459,6 +486,7 @@ namespace mongo {
     }
 
     bool Value::coerceToBool() const {
+        // TODO Unify the implementation with BSONElement::trueValue().
         BSONType type = getType();
         switch(type) {
         case NumberDouble:
@@ -514,15 +542,6 @@ namespace mongo {
         return false;
     }
 
-    intrusive_ptr<const Value> Value::coerceToBoolean() const {
-        bool result = coerceToBool();
-
-        /* always normalize to the singletons */
-        if (result)
-            return Value::getTrue();
-        return Value::getFalse();
-    }
-
     int Value::coerceToInt() const {
         switch(type) {
         case NumberDouble:
@@ -541,7 +560,7 @@ namespace mongo {
         case String:
         default:
             uassert(16003, str::stream() <<
-                    "can't convert from BSON type " << type <<
+                    "can't convert from BSON type " << typeName(type) <<
                     " to int",
                     false);
         } // switch(type)
@@ -567,7 +586,7 @@ namespace mongo {
         case String:
         default:
             uassert(16004, str::stream() <<
-                    "can't convert from BSON type " << type <<
+                    "can't convert from BSON type " << typeName(type) <<
                     " to long",
                     false);
         } // switch(type)
@@ -593,7 +612,7 @@ namespace mongo {
         case String:
         default:
             uassert(16005, str::stream() <<
-                    "can't convert from BSON type " << type <<
+                    "can't convert from BSON type " << typeName(type) <<
                     " to double",
                     false);
         } // switch(type)
@@ -607,19 +626,14 @@ namespace mongo {
         case Date:
             return dateValue; 
 
-        case jstNULL:
-        case Undefined:
-            break;
+        case Timestamp:
+            return Date_t(timestampValue.getSecs() * 1000ULL);
 
         default:
             uassert(16006, str::stream() <<
-                    "can't convert from BSON type " << type <<
-                    " to double",
+                    "can't convert from BSON type " << typeName(type) << " to Date",
                     false);
         } // switch(type)
-
-            verify(false); // CW TODO no conversion available
-        return jstNULL; 
     }
 
     string Value::coerceToString() const {
@@ -640,6 +654,10 @@ namespace mongo {
         case String:
             return stringValue;
 
+        case Timestamp:
+            ss << timestampValue.toStringPretty();
+            return ss.str();
+
         case Date:
             return dateValue.toString();
 
@@ -649,12 +667,26 @@ namespace mongo {
 
         default:
             uassert(16007, str::stream() <<
-                    "can't convert from BSON type " << type <<
-                    " to double",
+                    "can't convert from BSON type " << typeName(type) <<
+                    " to String",
                     false);
         } // switch(type)
 
         return "";
+    }
+
+    OpTime Value::coerceToTimestamp() const {
+        switch(type) {
+
+        case Timestamp:
+            return timestampValue;
+
+        default:
+            uassert(16378, str::stream() <<
+                    "can't convert from BSON type " << typeName(type) <<
+                    " to timestamp",
+                    false);
+        } // switch(type)
     }
 
     int Value::compare(const intrusive_ptr<const Value> &rL,
@@ -737,8 +769,8 @@ namespace mongo {
 
         // CW TODO for now, only compare like values
         uassert(16016, str::stream() <<
-                "can't compare values of BSON types " << lType <<
-                " and " << rType,
+                "can't compare values of BSON types " << typeName(lType) <<
+                " and " << typeName(rType),
                 lType == rType);
 
         switch(lType) {
@@ -788,7 +820,7 @@ namespace mongo {
         case Symbol:
         case CodeWScope:
             uassert(16017, str::stream() <<
-                    "comparisons of values of BSON type " << lType <<
+                    "comparisons of values of BSON type " << typeName(lType) <<
                     " are not supported", false);
             // pBuilder->appendBinData(fieldName, ...);
             break;
@@ -823,9 +855,9 @@ namespace mongo {
             return rL->stringValue.compare(rR->stringValue);
 
         case Timestamp:
-            if (rL->dateValue < rR->dateValue)
+            if (rL->timestampValue < rR->timestampValue)
                 return -1;
-            if (rL->dateValue > rR->dateValue)
+            if (rL->timestampValue > rR->timestampValue)
                 return 1;
             return 0;
 
@@ -891,7 +923,7 @@ namespace mongo {
         case Symbol:
         case CodeWScope:
             uassert(16018, str::stream() <<
-                    "hashes of values of BSON type " << type <<
+                    "hashes of values of BSON type " << typeName(type) <<
                     " are not supported", false);
             break;
 
@@ -912,7 +944,7 @@ namespace mongo {
             break;
 
         case Timestamp:
-            boost::hash_combine(seed, (unsigned long long)dateValue);
+            boost::hash_combine(seed, timestampValue.asLL());
             break;
 
         case Undefined:
@@ -992,7 +1024,7 @@ namespace mongo {
             }
         }
 
-        /* NOTREACHED */
+        // Reachable, but callers must subsequently err out in this case.
         return Undefined;
     }
 

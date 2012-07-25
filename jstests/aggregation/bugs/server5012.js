@@ -1,6 +1,7 @@
 // use aggdb
 db = db.getSiblingDB("aggdb");
 
+load('jstests/aggregation/data/articles.js');
 // original crash from ticket
 var r3 = db.runCommand({ aggregate:"article", pipeline:[
     { $project: {
@@ -11,6 +12,8 @@ var r3 = db.runCommand({ aggregate:"article", pipeline:[
         Writer: "$author"
     }}
 ]});
+
+printjson(r3);
 
 var r3result = [
     {
@@ -24,4 +27,4 @@ var r3result = [
     }
 ];
 
-assert(arrayEq(r3.result, r3result), 's5012 failed');
+assert.eq(r3.result, r3result, 's5012 failed');

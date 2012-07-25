@@ -859,6 +859,7 @@ cscript //Nologo createCPPfromJavaScriptFiles.js "$(ProjectDir).."</Command>
       <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Win2008PlusDebug|x64'">4355;4800;4267;4244;4334</DisableSpecificWarnings>
       <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Win2008PlusRelease|x64'">4355;4800;4267;4244;4334</DisableSpecificWarnings>
     </ClCompile>
+    <ClCompile Include="..\client\authentication_table.cpp" />
     <ClCompile Include="..\client\connection_factory.cpp" />
     <ClCompile Include="..\db\dbmessage.cpp" />
     <ClCompile Include="..\util\concurrency\mutexdebugger.cpp" />
@@ -933,7 +934,6 @@ cscript //Nologo createCPPfromJavaScriptFiles.js "$(ProjectDir).."</Command>
     <ClCompile Include="..\client\dbclient_rs.cpp" />
     <ClCompile Include="..\client\syncclusterconnection.cpp" />
     <ClCompile Include="..\db\commands.cpp" />
-    <ClCompile Include="..\db\commands\cloud.cpp" />
     <ClCompile Include="..\db\lasterror.cpp" />
     <ClCompile Include="..\db\nonce.cpp" />
     <ClCompile Include="..\..\third_party\pcre-8.30\pcrecpp.cc" />
@@ -1072,6 +1072,7 @@ cscript //Nologo createCPPfromJavaScriptFiles.js "$(ProjectDir).."</Command>
     <ClInclude Include="..\..\third_party\js-1.7\jsxml.h" />
     <ClInclude Include="..\..\third_party\js-1.7\prmjtime.h" />
     <ClInclude Include="..\..\third_party\js-1.7\resource.h" />
+    <ClInclude Include="..\client\authentication_table.h" />
     <ClInclude Include="..\client\dbclientinterface.h" />
     <ClInclude Include="..\platform\atomic_intrinsics.h" />
     <ClInclude Include="..\platform\atomic_intrinsics_win32.h" />

@@ -259,12 +259,21 @@ namespace mongo {
             size_t protectSize = protectEnd - protectStart;
             dassert(protectSize>0&&protectSize<=MemoryMappedFile::ChunkSize);
 
-            DWORD old;
-            bool ok = VirtualProtect((void*)protectStart, protectSize, PAGE_WRITECOPY, &old);
-            if( !ok ) {
-                DWORD e = GetLastError();
-                log() << "VirtualProtect failed (mcw) " << mmf->filename() << ' ' << chunkno << hex << protectStart << ' ' << protectSize << ' ' << errnoWithDescription(e) << endl;
-                verify(false);
+            DWORD oldProtection;
+            bool ok = VirtualProtect( reinterpret_cast<void*>( protectStart ),
+                                      protectSize,
+                                      PAGE_WRITECOPY,
+                                      &oldProtection );
+            if ( !ok ) {
+                DWORD dosError = GetLastError();
+                log() << "VirtualProtect for " << mmf->filename()
+                        << " chunk " << chunkno
+                        << " failed with " << errnoWithDescription( dosError )
+                        << " (chunk size is " << protectSize
+                        << ", address is " << hex << protectStart << dec << ")"
+                        << " in mongo::makeChunkWritable, terminating"
+                        << endl;
+                fassertFailed( 16362 );
             }
         }
 
@@ -347,10 +356,9 @@ namespace mongo {
             bool success = false;
             bool timeout = false;
             int dosError = ERROR_SUCCESS;
-            const int maximumLoopCount = 1000 * 1000;
-            const int maximumTimeInSeconds = 60;
+            const int maximumTimeInSeconds = 60 * 15;
             Timer t;
-            while ( !success && !timeout && loopCount < maximumLoopCount ) {
+            while ( !success && !timeout ) {
                 ++loopCount;
                 success = FALSE != FlushViewOfFile( _view, 0 );
                 if ( !success ) {
@@ -373,6 +381,8 @@ namespace mongo {
                         << " after " << loopCount
                         << " attempts taking " << t.millis()
                         << " ms" << endl;
+                // Abort here to avoid data corruption
+                fassert(16387, false);
             }
 
             success = FALSE != FlushFileBuffers(_fd);

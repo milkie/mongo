@@ -25,12 +25,21 @@
 #include "../repl.h"
 #include "../instance.h"
 #include "mongo/db/repl/bgsync.h"
+#include "mongo/platform/bits.h"
 
 using namespace std;
 
 namespace mongo {
     
     using namespace bson;
+
+#ifdef MONGO_PLATFORM_64
+    const int ReplSetImpl::replWriterThreadCount = 16;
+    const int ReplSetImpl::replPrefetcherThreadCount = 16;
+#else
+    const int ReplSetImpl::replWriterThreadCount = 2;
+    const int ReplSetImpl::replPrefetcherThreadCount = 2;
+#endif
 
     bool replSet = false;
     ReplSet *theReplSet = 0;
@@ -72,7 +81,7 @@ namespace mongo {
         log() << "replSet error RS102 too stale to catch up, at least from " << stale->fullName() << rsLog;
         log() << "replSet our last optime : " << lastOpTimeWritten.toStringLong() << rsLog;
         log() << "replSet oldest at " << stale->fullName() << " : " << oldest["ts"]._opTime().toStringLong() << rsLog;
-        log() << "replSet See http://www.mongodb.org/display/DOCS/Resyncing+a+Very+Stale+Replica+Set+Member" << rsLog;
+        log() << "replSet See http://dochub.mongodb.org/core/resyncingaverystalereplicasetmember" << rsLog;
 
         // reset minvalid so that we can't become primary prematurely
         {

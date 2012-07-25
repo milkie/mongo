@@ -999,6 +999,16 @@ cscript //Nologo ..\shell\createCPPfromJavaScriptFiles.js "$(ProjectDir).."
       <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Win2008PlusDebug|x64'">4355;4800;4267;4244;4334</DisableSpecificWarnings>
       <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Win2008PlusRelease|x64'">4355;4800;4267;4244;4334</DisableSpecificWarnings>
     </ClCompile>
+    <ClCompile Include="..\..\third_party\murmurhash3\MurmurHash3.cpp">
+      <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">4355;4800;4267;4244;4141</DisableSpecificWarnings>
+      <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">4355;4800;4267;4244;4141</DisableSpecificWarnings>
+      <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Win2008PlusDebug|Win32'">4355;4800;4267;4244;4141</DisableSpecificWarnings>
+      <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Win2008PlusRelease|Win32'">4355;4800;4267;4244;4141</DisableSpecificWarnings>
+      <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">4355;4800;4267;4244;4141</DisableSpecificWarnings>
+      <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Release|x64'">4355;4800;4267;4244;4141</DisableSpecificWarnings>
+      <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Win2008PlusDebug|x64'">4355;4800;4267;4244;4141</DisableSpecificWarnings>
+      <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Win2008PlusRelease|x64'">4355;4800;4267;4244;4141</DisableSpecificWarnings>
+    </ClCompile>
     <ClCompile Include="..\bson\oid.cpp" />
     <ClCompile Include="..\client\authentication_table.cpp" />
     <ClCompile Include="..\client\connection_factory.cpp" />
@@ -1090,7 +1100,6 @@ cscript //Nologo ..\shell\createCPPfromJavaScriptFiles.js "$(ProjectDir).."
     <ClCompile Include="..\util\version.cpp" />
     <ClCompile Include="btreebuilder.cpp" />
     <ClCompile Include="cap.cpp" />
-    <ClCompile Include="commands\cloud.cpp" />
     <ClCompile Include="commands\distinct.cpp" />
     <ClCompile Include="commands\document_source_cursor.cpp" />
     <ClCompile Include="commands\find_and_modify.cpp" />
@@ -1146,7 +1155,6 @@ cscript //Nologo ..\shell\createCPPfromJavaScriptFiles.js "$(ProjectDir).."
     <ClCompile Include="pipeline\accumulator_single_value.cpp" />
     <ClCompile Include="pipeline\accumulator_sum.cpp" />
     <ClCompile Include="pipeline\builder.cpp" />
-    <ClCompile Include="pipeline\dependency_tracker.cpp" />
     <ClCompile Include="pipeline\document.cpp" />
     <ClCompile Include="pipeline\document_source.cpp" />
     <ClCompile Include="pipeline\document_source_bson_array.cpp" />
@@ -1217,6 +1225,7 @@ cscript //Nologo ..\shell\createCPPfromJavaScriptFiles.js "$(ProjectDir).."
     <ClInclude Include="..\..\third_party\js-1.7\jsxml.h" />
     <ClInclude Include="..\..\third_party\js-1.7\prmjtime.h" />
     <ClInclude Include="..\..\third_party\js-1.7\resource.h" />
+    <ClInclude Include="..\..\third_party\murmurhash3\MurmurHash3.h" />
     <ClInclude Include="..\client\authentication_table.h" />
     <ClInclude Include="..\platform\atomic_intrinsics.h" />
     <ClInclude Include="..\platform\atomic_intrinsics_win32.h" />
@@ -1429,7 +1438,6 @@ cscript //Nologo ..\shell\createCPPfromJavaScriptFiles.js "$(ProjectDir).."
     <ClInclude Include="pagefault.h" />
     <ClInclude Include="pipeline\accumulator.h" />
     <ClInclude Include="pipeline\builder.h" />
-    <ClInclude Include="pipeline\dependency_tracker.h" />
     <ClInclude Include="pipeline\document.h" />
     <ClInclude Include="pipeline\document_source.h" />
     <ClInclude Include="pipeline\doc_mem_monitor.h" />

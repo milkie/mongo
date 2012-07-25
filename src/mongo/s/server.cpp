@@ -211,8 +211,6 @@ namespace mongo {
         }
     }
 
-    void cloudCmdLineParamIs(string cmd);
-
 } // namespace mongo
 
 using namespace mongo;
@@ -297,15 +295,19 @@ int _main(int argc, char* argv[]) {
 #if defined(_WIN32)
     po::options_description windows_scm_options("Windows Service Control Manager options");
 #endif
+    po::options_description ssl_options("SSL options");
     po::options_description sharding_options("Sharding options");
     po::options_description visible_options("Allowed options");
     po::options_description hidden_options("Hidden options");
     po::positional_options_description positional_options;
 
-    CmdLine::addGlobalOptions( general_options, hidden_options );
+    CmdLine::addGlobalOptions( general_options, hidden_options, ssl_options );
 
     general_options.add_options()
     ("nohttpinterface", "disable http interface");
+
+    hidden_options.add_options()
+    ("noAutoSplit", "do not send split commands with writes");
 
 #if defined(_WIN32)
     CmdLine::addWindowsOptions( windows_scm_options, hidden_options );
@@ -324,10 +326,16 @@ int _main(int argc, char* argv[]) {
     ;
 
     visible_options.add(general_options);
+
 #if defined(_WIN32)
     visible_options.add(windows_scm_options);
 #endif
+
     visible_options.add(sharding_options);
+
+#ifdef MONGO_SSL
+    visible_options.add(ssl_options);
+#endif
 
     // parse options
     po::variables_map params;
@@ -387,14 +395,14 @@ int _main(int argc, char* argv[]) {
         noHttpInterface = true;
     }
 
+    if (params.count("noAutoSplit")) {
+        warning() << "running with auto-splitting disabled" << endl;
+        Chunk::ShouldAutoSplit = false;
+    }
+
     if ( ! params.count( "configdb" ) ) {
         out() << "error: no args for --configdb" << endl;
         return 4;
-    }
-
-    if( params.count("cloud") ) {
-        string s = params["cloud"].as<string>();
-        cloudCmdLineParamIs(s);
     }
 
     splitStringDelim( params["configdb"].as<string>() , &configdbs , ',' );

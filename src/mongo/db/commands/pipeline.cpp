@@ -17,14 +17,13 @@
 #include "pch.h"
 #include "db/commands/pipeline.h"
 
-#include "db/cursor.h"
+#include "mongo/client/authentication_table.h"
+#include "db/jsobj.h"
 #include "db/pipeline/accumulator.h"
-#include "db/pipeline/dependency_tracker.h"
 #include "db/pipeline/document.h"
 #include "db/pipeline/document_source.h"
 #include "db/pipeline/expression.h"
 #include "db/pipeline/expression_context.h"
-#include "db/pdfile.h"
 #include "util/mongoutils/str.h"
 
 namespace mongo {
@@ -127,6 +126,13 @@ namespace mongo {
             /* check for debug options */
             if (!strcmp(pFieldName, splitMongodPipelineName)) {
                 pPipeline->splitMongodPipeline = true;
+                continue;
+            }
+
+            /* Ignore $auth information sent along with the command. The authentication system will
+             * use it, it's not a part of the pipeline.
+             */
+            if (!strcmp(pFieldName, AuthenticationTable::fieldName.c_str())) {
                 continue;
             }
 
@@ -280,36 +286,36 @@ namespace mongo {
         pShardPipeline->collectionName = collectionName;
         pShardPipeline->explain = explain;
 
-        /* put the source list aside */
-        SourceVector tempVector(sourceVector);
-        sourceVector.clear();
+        // We will be removing from the front so reverse for now. undone later
+        // TODO: maybe sourceVector should be a deque
+        reverse(sourceVector.begin(), sourceVector.end());
 
         /*
           Run through the pipeline, looking for points to split it into
           shard pipelines, and the rest.
          */
-        while(!tempVector.empty()) {
-            intrusive_ptr<DocumentSource> &pSource = tempVector.front();
+        while(!sourceVector.empty()) {
+            // pop the first source
+            intrusive_ptr<DocumentSource> pSource = sourceVector.back();
+            sourceVector.pop_back();
 
-            /* hang on to this in advance, in case it is a group */
-            DocumentSourceGroup *pGroup =
-                dynamic_cast<DocumentSourceGroup *>(pSource.get());
+            // Check if this source is splittable
+            SplittableDocumentSource* splittable=
+                dynamic_cast<SplittableDocumentSource *>(pSource.get());
 
-            /* move the source from the tempVector to the shard sourceVector */
-            pShardPipeline->sourceVector.push_back(pSource);
-            tempVector.erase(tempVector.begin());
+            if (!splittable){
+                // move the source from the router sourceVector to the shard sourceVector
+                pShardPipeline->sourceVector.push_back(pSource);
+            }
+            else {
+                // split into Router and Shard sources
+                intrusive_ptr<DocumentSource> shardSource  = splittable->getShardSource();
+                intrusive_ptr<DocumentSource> routerSource = splittable->getRouterSource();
+                if (shardSource) pShardPipeline->sourceVector.push_back(shardSource);
+                if (routerSource)          this->sourceVector.push_back(routerSource);
 
-            /*
-              If we found a group, that's a split point.
-             */
-            if (pGroup) {
-                /* start this pipeline with the group merger */
-                sourceVector.push_back(pGroup->createMerger());
-
-                /* and then add everything that remains and quit */
-                for(size_t tempn = tempVector.size(), tempi = 0;
-                    tempi < tempn; ++tempi)
-                    sourceVector.push_back(tempVector[tempi]);
+                // put the sourceVector back in the correct order and exit the loop
+                reverse(sourceVector.begin(), sourceVector.end());
                 break;
             }
         }
@@ -365,22 +371,6 @@ namespace mongo {
 
     bool Pipeline::run(BSONObjBuilder &result, string &errmsg,
                        const intrusive_ptr<DocumentSource> &pInputSource) {
-        /*
-          Analyze dependency information.
-
-          This pushes dependencies from the end of the pipeline back to the
-          front of it, and finally passes that to the input source before we
-          execute the pipeline.
-        */
-        intrusive_ptr<DependencyTracker> pTracker(new DependencyTracker());
-        for(SourceVector::reverse_iterator iter(sourceVector.rbegin()),
-                listBeg(sourceVector.rend()); iter != listBeg; ++iter) {
-            intrusive_ptr<DocumentSource> pTemp(*iter);
-            pTemp->manageDependencies(pTracker);
-        }
-
-        pInputSource->manageDependencies(pTracker);
-        
         /* chain together the sources we found */
         DocumentSource *pSource = pInputSource.get();
         for(SourceVector::iterator iter(sourceVector.begin()),
@@ -396,50 +386,37 @@ namespace mongo {
           We do this even if we're doing an explain, in order to capture
           the document counts and other stats.  However, we don't capture
           the result documents for explain.
-
-          We wrap all the BSONObjBuilder calls with a try/catch in case the
-          objects get too large and cause an exception.
         */
-        try {
-            if (explain) {
-                if (!pCtx->getInRouter())
-                    writeExplainShard(result, pInputSource);
-                else {
-                    writeExplainMongos(result, pInputSource);
-                }
+        if (explain) {
+            if (!pCtx->getInRouter())
+                writeExplainShard(result, pInputSource);
+            else {
+                writeExplainMongos(result, pInputSource);
             }
-            else
-            {
-                BSONArrayBuilder resultArray; // where we'll stash the results
-                for(bool hasDocument = !pSource->eof(); hasDocument;
-                    hasDocument = pSource->advance()) {
-                    intrusive_ptr<Document> pDocument(pSource->getCurrent());
+        }
+        else {
+            // the array in which the aggregation results reside
+            // cant use subArrayStart() due to error handling
+            BSONArrayBuilder resultArray;
+            for(bool hasDoc = !pSource->eof(); hasDoc; hasDoc = pSource->advance()) {
+                intrusive_ptr<Document> pDocument(pSource->getCurrent());
 
-                    /* add the document to the result set */
-                    BSONObjBuilder documentBuilder;
-                    pDocument->toBson(&documentBuilder);
-                    resultArray.append(documentBuilder.done());
-                }
-
-                result.appendArray("result", resultArray.arr());
+                /* add the document to the result set */
+                BSONObjBuilder documentBuilder (resultArray.subobjStart());
+                pDocument->toBson(&documentBuilder);
+                documentBuilder.doneFast();
+                // object will be too large, assert. the extra 1KB is for headers
+                uassert(16389,
+                        str::stream() << "aggregation result exceeds maximum document size ("
+                                      << BSONObjMaxUserSize / (1024 * 1024) << "MB)",
+                        resultArray.len() < BSONObjMaxUserSize - 1024);
             }
-         } catch(AssertionException &ae) {
-            /* 
-               If its not the "object too large" error, rethrow.
-               At time of writing, that error code comes from
-               mongo/src/mongo/bson/util/builder.h
-            */
-            if (ae.getCode() != 13548)
-                throw;
 
-            /* throw the nicer human-readable error */
-            uassert(16029, str::stream() <<
-                    "aggregation result exceeds maximum document size limit ("
-                    << (BSONObjMaxUserSize / (1024 * 1024)) << "MB)",
-                    false);
-         }
+            resultArray.done();
+            result.appendArray("result", resultArray.arr());
+        }
 
-        return true;
+    return true;
     }
 
     void Pipeline::writeExplainOps(BSONArrayBuilder *pArrayBuilder) const {

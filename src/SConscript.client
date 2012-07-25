@@ -95,18 +95,19 @@ for path in clientHeaderDirectories:
     clientHeaders.extend(Glob('mongo/%s/*.h' % path))
     clientHeaders.extend(Glob('mongo/%s/*.hpp' % path))
 
-env.Install('#/', [
-        env.Library('mongoclient', clientSource),
+mongoclient_lib = env.Library('mongoclient', clientSource),
+mongoclient_install = env.Install('#/', [
+        mongoclient_lib,
         #env.SharedLibrary('mongoclient', clientSource),
         ])
+env.Alias('mongoclient', mongoclient_install)
 
 clientTests = clientEnv.Install('#/', [
-        clientEnv.Program(target, [source]) for (target, source) in exampleSourceMap])
+        clientEnv.Program(target,
+                          [source, mongoclient_lib]) for (target, source) in exampleSourceMap])
 
-bsonDemoEnv = clientEnv.Clone()
-bsonDemoEnv['LIBS'].remove('mongoclient')
 clientTests.append(
-    bsonDemoEnv.Install('#/', bsonDemoEnv.Program('bsondemo', 'mongo/bson/bsondemo/bsondemo.cpp')))
+    clientEnv.Install('#/', clientEnv.Program('bsondemo', 'mongo/bson/bsondemo/bsondemo.cpp')))
 
 clientEnv.Alias('clientTests', clientTests, [])
 

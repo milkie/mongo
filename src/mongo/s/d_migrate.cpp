@@ -38,6 +38,8 @@
 #include "../db/repl_block.h"
 #include "../db/dur.h"
 #include "../db/clientcursor.h"
+#include "../db/pagefault.h"
+#include "../db/repl.h"
 
 #include "../client/connpool.h"
 #include "../client/distlock.h"
@@ -160,6 +162,7 @@ namespace mongo {
     struct OldDataCleanup {
         static AtomicUInt _numThreads; // how many threads are doing async cleanup
 
+        bool secondaryThrottle;
         string ns;
         BSONObj min;
         BSONObj max;
@@ -170,6 +173,7 @@ namespace mongo {
             _numThreads++;
         }
         OldDataCleanup( const OldDataCleanup& other ) {
+            secondaryThrottle = other.secondaryThrottle;
             ns = other.ns;
             min = other.min.getOwned();
             max = other.max.getOwned();
@@ -195,6 +199,7 @@ namespace mongo {
                                               max ,
                                               findShardKeyIndexPattern_unlocked( ns , shardKeyPattern ) , 
                                               false , /*maxInclusive*/
+                                              secondaryThrottle ,
                                               cmdLine.moveParanoia ? &rs : 0 , /*callback*/
                                               true ); /*fromMigrate*/
                 log() << "moveChunk deleted: " << numDeleted << migrateLog;
@@ -788,6 +793,13 @@ namespace mongo {
             if( cmdObj["toShard"].type() == String ){
                 to = cmdObj["toShard"].String();
             }
+            
+            // if we do a w=2 after very write
+            bool secondaryThrottle = cmdObj["secondaryThrottle"].trueValue();
+            if ( secondaryThrottle && ! anyReplEnabled() ) {
+                secondaryThrottle = false;
+                warning() << "secondaryThrottle selected but no replication" << endl;
+            }
 
             BSONObj min  = cmdObj["min"].Obj();
             BSONObj max  = cmdObj["max"].Obj();
@@ -887,8 +899,9 @@ namespace mongo {
             ShardChunkVersion maxVersion;
             string myOldShard;
             {
-                scoped_ptr<ScopedDbConnection> conn( ScopedDbConnection::getScopedDbConnection(
-                        shardingState.getConfigServer() ) );
+                scoped_ptr<ScopedDbConnection> conn(
+                        ScopedDbConnection::getInternalScopedDbConnection(
+                                shardingState.getConfigServer() ) );
 
                 BSONObj x;
                 BSONObj currChunk;
@@ -987,7 +1000,8 @@ namespace mongo {
                                                           "min" << min <<
                                                           "max" << max <<
                                                           "shardKeyPattern" << shardKeyPattern <<
-                                                          "configServer" << configServer.modelServer()
+                                                          "configServer" << configServer.modelServer() <<
+                                                          "secondaryThrottle" << secondaryThrottle
                                                           ) ,
                                                     res );
                 }
@@ -1234,8 +1248,9 @@ namespace mongo {
                 bool ok = false;
                 BSONObj cmdResult;
                 try {
-                    scoped_ptr<ScopedDbConnection> conn( ScopedDbConnection::getScopedDbConnection(
-                            shardingState.getConfigServer() ) );
+                    scoped_ptr<ScopedDbConnection> conn(
+                            ScopedDbConnection::getInternalScopedDbConnection(
+                                    shardingState.getConfigServer() ) );
                     ok = conn->get()->runCommand( "config" , cmd , cmdResult );
                     conn->done();
                 }
@@ -1261,8 +1276,8 @@ namespace mongo {
 
                     try {
                         scoped_ptr<ScopedDbConnection> conn(
-                                ScopedDbConnection::getScopedDbConnection( shardingState
-                                                                           .getConfigServer() ) );
+                                ScopedDbConnection::getInternalScopedDbConnection(
+                                        shardingState.getConfigServer() ) );
 
                         // look for the chunk in this shard whose version got bumped
                         // we assume that if that mod made it to the config, the applyOps was successful
@@ -1304,6 +1319,7 @@ namespace mongo {
             {
                 // 6.
                 OldDataCleanup c;
+                c.secondaryThrottle = secondaryThrottle;
                 c.ns = ns;
                 c.min = min.getOwned();
                 c.max = max.getOwned();
@@ -1399,19 +1415,22 @@ namespace mongo {
             ScopedDbConnection& conn = *connPtr;
             conn->getLastError(); // just test connection
 
-            {
+            {                
                 // 1. copy indexes
-                auto_ptr<DBClientCursor> indexes = conn->getIndexes( ns );
+                
                 vector<BSONObj> all;
-                while ( indexes->more() ) {
-                    all.push_back( indexes->next().getOwned() );
+                {
+                    auto_ptr<DBClientCursor> indexes = conn->getIndexes( ns );
+                    
+                    while ( indexes->more() ) {
+                        all.push_back( indexes->next().getOwned() );
+                    }
                 }
 
-                Client::WriteContext ct( ns );
-
-                string system_indexes = cc().database()->name + ".system.indexes";
                 for ( unsigned i=0; i<all.size(); i++ ) {
                     BSONObj idx = all[i];
+                    Client::WriteContext ct( ns );
+                    string system_indexes = cc().database()->name + ".system.indexes";
                     theDataFileMgr.insertAndLog( system_indexes.c_str() , idx, true /* flag fromMigrate in oplog */ );
                 }
 
@@ -1426,6 +1445,7 @@ namespace mongo {
                                                       max ,
                                                       findShardKeyIndexPattern_unlocked( ns , shardKeyPattern ) , 
                                                       false , /*maxInclusive*/
+                                                      secondaryThrottle , /* secondaryThrottle */
                                                       cmdLine.moveParanoia ? &rs : 0 , /*callback*/
                                                       true ); /* flag fromMigrate in oplog */
                 if ( num )
@@ -1457,12 +1477,27 @@ namespace mongo {
                     while( i.more() ) {
                         BSONObj o = i.next().Obj();
                         {
-                            Lock::DBWrite lk( ns );
-                            Helpers::upsert( ns, o, true );
+                            PageFaultRetryableSection pgrs;
+                            while ( 1 ) {
+                                try {
+                                    Lock::DBWrite lk( ns );
+                                    Helpers::upsert( ns, o, true );
+                                    break;
+                                }
+                                catch ( PageFaultException& e ) {
+                                    e.touch();
+                                }
+                            }
                         }
                         thisTime++;
                         numCloned++;
                         clonedBytes += o.objsize();
+
+                        if ( secondaryThrottle ) {
+                            if ( ! waitForReplication( cc().getLastOp(), 2, 60 /* seconds to wait */ ) ) {
+                                warning() << "secondaryThrottle on, but doc insert timed out after 60 seconds, continuing" << endl;
+                            }
+                        }
                     }
 
                     if ( thisTime == 0 )
@@ -1632,6 +1667,7 @@ namespace mongo {
                                           id,
                                           findShardKeyIndexPattern_locked( ns , shardKeyPattern ), 
                                           true , /*maxInclusive*/
+                                          false , /* secondaryThrottle */
                                           cmdLine.moveParanoia ? &rs : 0 , /*callback*/
                                           true ); /*fromMigrate*/
 
@@ -1742,7 +1778,8 @@ namespace mongo {
         long long clonedBytes;
         long long numCatchup;
         long long numSteady;
-        
+        bool secondaryThrottle;
+
         int slaveCount;
 
         enum State { READY , CLONE , CATCHUP , STEADY , COMMIT_START , DONE , FAIL , ABORT } state;
@@ -1791,6 +1828,12 @@ namespace mongo {
             migrateStatus.min = cmdObj["min"].Obj().getOwned();
             migrateStatus.max = cmdObj["max"].Obj().getOwned();
             migrateStatus.shardKeyPattern = cmdObj["shardKeyPattern"].Obj().getOwned();
+            migrateStatus.secondaryThrottle = cmdObj["secondaryThrottle"].trueValue();
+            
+            if ( migrateStatus.secondaryThrottle && ! anyReplEnabled() ) {
+                warning() << "secondaryThrottle asked for, but not replication" << endl;
+                migrateStatus.secondaryThrottle = false;
+            }
 
             boost::thread m( migrateThread );
 

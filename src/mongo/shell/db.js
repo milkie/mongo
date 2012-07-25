@@ -59,7 +59,7 @@ DB.prototype.adminCommand = function( obj ){
 
 DB.prototype._adminCommand = DB.prototype.adminCommand; // alias old name
 
-DB.prototype.addUser = function( username , pass, readOnly, replicatedTo ){
+DB.prototype.addUser = function( username , pass, readOnly, replicatedTo, timeout ){
     if ( pass == null || pass.length == 0 )
         throw "password can't be empty";
 
@@ -70,7 +70,19 @@ DB.prototype.addUser = function( username , pass, readOnly, replicatedTo ){
     u.readOnly = readOnly;
     u.pwd = hex_md5( username + ":mongo:" + pass );
 
-    c.save( u );
+    try {
+        c.save( u );
+    } catch (e) {
+        // SyncClusterConnections call GLE automatically after every write and will throw an
+        // exception if the insert failed.
+        if ( tojson(e).indexOf( "login" ) >= 0 ){
+            // TODO: this check is a hack
+            print( "Creating user seems to have succeeded but threw an exception because we no " +
+                   "longer have auth." );
+        } else {
+            throw "Could not insert into system.users: " + tojson(e);
+        }
+    }
     print( tojson( u ) );
 
     //
@@ -84,10 +96,16 @@ DB.prototype.addUser = function( username , pass, readOnly, replicatedTo ){
     // in mongod version 2.1.0-, this worked
     var le = {};
     try {        
-        le = this.getLastErrorObj( replicatedTo, 30 * 1000 );
+        le = this.getLastErrorObj( replicatedTo, timeout || 30 * 1000 );
         // printjson( le )
     }
     catch (e) {
+        errjson = tojson(e);
+        if ( errjson.indexOf( "login" ) >= 0 || errjson.indexOf( "unauthorized" ) >= 0 ) {
+            // TODO: this check is a hack
+            print( "addUser succeeded, but cannot wait for replication since we no longer have auth" );
+            return "";
+        }
         print( "could not find getLastError object : " + tojson( e ) )
     }
     
@@ -108,8 +126,8 @@ DB.prototype.addUser = function( username , pass, readOnly, replicatedTo ){
 }
 
 DB.prototype.logout = function(){
-    return this.runCommand({logout : 1});
-}
+    return this.getMongo().logout(this.getName());
+};
 
 DB.prototype.removeUser = function( username ){
     this.getCollection( "system.users" ).remove( { user : username } );
@@ -901,8 +919,8 @@ DB.prototype.getSlaveOk = function() {
     return this._mongo.getSlaveOk();
 }
 
-/* Loads any scripts contained in db.system.js into the client shell.
+/* Loads any scripts contained in system.js into the client shell.
 */
 DB.prototype.loadServerScripts = function(){
-    db.system.js.find().forEach(function(u){eval(u._id + " = " + u.value);});
+    this.system.js.find().forEach(function(u){eval(u._id + " = " + u.value);});
 }

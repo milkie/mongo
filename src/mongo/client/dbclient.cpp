@@ -330,6 +330,14 @@ namespace mongo {
         _hasAuthentication = false;
     }
 
+    bool DBClientWithCommands::hasAuthenticationTable() {
+        return _hasAuthentication;
+    }
+
+    AuthenticationTable& DBClientWithCommands::getAuthenticationTable() {
+        return _authTable;
+    }
+
     inline bool DBClientWithCommands::runCommand(const string &dbname,
                                                  const BSONObj& cmd,
                                                  BSONObj &info,
@@ -489,6 +497,10 @@ namespace mongo {
 
         errmsg = info.toString();
         return false;
+    }
+
+    void DBClientWithCommands::logout(const string &dbname, BSONObj& info) {
+        runCommand(dbname, BSON("logout" << 1), info);
     }
 
     BSONObj ismastercmdobj = fromjson("{\"ismaster\":1}");

@@ -26,11 +26,11 @@ namespace mongo {
     BSONObj LockStat::report() const { 
         BSONObjBuilder b;
 
-        BSONObjBuilder t( b.subobjStart( "timeLocked" ) );
+        BSONObjBuilder t( b.subobjStart( "timeLockedMicros" ) );
         _append( b , timeLocked );
         t.done();
         
-        BSONObjBuilder a( b.subobjStart( "timeAcquiring" ) );
+        BSONObjBuilder a( b.subobjStart( "timeAcquiringMicros" ) );
         _append( a , timeAcquiring );
         a.done();
         
@@ -95,4 +95,10 @@ namespace mongo {
         timeLocked[mapNo(type)].fetchAndAdd( micros );
     }
 
+    void LockStat::reset() {
+        for ( int i = 0; i < N; i++ ) {
+            timeAcquiring[i].store(0);
+            timeLocked[i].store(0);
+        }
+    }
 }

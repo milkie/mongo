@@ -64,7 +64,7 @@
 
 namespace mongo {
 
-    namespace dur { 
+    namespace dur {
         extern unsigned long long DataLimitPerJournalFile;
     }
 
@@ -305,8 +305,8 @@ namespace mongo {
             if ( !h->isCurrentVersion() || forceRepair ) {
 
                 if( h->version <= 0 ) {
-                    uasserted(14026, 
-                      str::stream() << "db " << dbName << " appears corrupt pdfile version: " << h->version 
+                    uasserted(14026,
+                      str::stream() << "db " << dbName << " appears corrupt pdfile version: " << h->version
                                     << " info: " << h->versionMinor << ' ' << h->fileLength);
                 }
 
@@ -358,12 +358,12 @@ namespace mongo {
 
     void checkIfReplMissingFromCommandLine() {
         Lock::GlobalWrite lk; // _openAllFiles is false at this point, so this is helpful for the query below to work as you can't open files when readlocked
-        if( !cmdLine.usingReplSets() ) { 
+        if( !cmdLine.usingReplSets() ) {
             Client::GodScope gs;
             DBDirectClient c;
-            unsigned long long x = 
+            unsigned long long x =
                 c.count("local.system.replset");
-            if( x ) { 
+            if( x ) {
                 log() << endl;
                 log() << "** warning: mongod started without --replSet yet " << x << " documents are present in local.system.replset" << endl;
                 log() << "**          restart with --replSet unless you are doing maintenance and no other clients are connected" << endl;
@@ -429,7 +429,7 @@ namespace mongo {
 
                 globalFlushCounters.flushed(time_flushing);
 
-                if( logLevel >= 1 || time_flushing >= 10000 ) { 
+                if( logLevel >= 1 || time_flushing >= 10000 ) {
                     log() << "flushing mmaps took " << time_flushing << "ms " << " for " << numFiles << " files" << endl;
                 }
             }
@@ -481,7 +481,7 @@ namespace mongo {
             ss << "*********************************************************************" << endl;
             ss << " ERROR: dbpath (" << dbpath << ") does not exist." << endl;
             ss << " Create this directory or give existing directory in --dbpath." << endl;
-            ss << " See http://www.mongodb.org/display/DOCS/Starting+and+Stopping+Mongo" << endl;
+            ss << " See http://dochub.mongodb.org/core/startingandstoppingmongo" << endl;
             ss << "*********************************************************************" << endl;
             uassert( 10296 ,  ss.str().c_str(), boost::filesystem::exists( dbpath ) );
         }
@@ -538,9 +538,9 @@ namespace mongo {
         CmdLine::launchOk();
 #endif
 
-        if( !noauth ) { 
-            // open admin db in case we need to use it later. TODO this is not the right way to 
-            // resolve this. 
+        if( !noauth ) {
+            // open admin db in case we need to use it later. TODO this is not the right way to
+            // resolve this.
             Client::WriteContext c("admin",dbpath,false);
         }
 
@@ -553,8 +553,8 @@ namespace mongo {
     void testPretouch();
 
     void initAndListen(int listenPort) {
-        try { 
-            _initAndListen(listenPort); 
+        try {
+            _initAndListen(listenPort);
         }
         catch ( DBException &e ) {
             log() << "exception in initAndListen: " << e.toString() << ", terminating" << endl;
@@ -622,11 +622,12 @@ static int mongoDbMain(int argc, char* argv[]) {
     po::options_description sharding_options("Sharding options");
     po::options_description visible_options("Allowed options");
     po::options_description hidden_options("Hidden options");
+    po::options_description ssl_options("SSL options");
 
     po::positional_options_description positional_options;
 
-    CmdLine::addGlobalOptions( general_options , hidden_options );
-    
+    CmdLine::addGlobalOptions( general_options , hidden_options , ssl_options );
+
     StringBuilder dbpathBuilder;
     dbpathBuilder << "directory for datafiles - defaults to " << dbpath;
 
@@ -717,7 +718,11 @@ static int mongoDbMain(int argc, char* argv[]) {
     visible_options.add(ms_options);
     visible_options.add(rs_options);
     visible_options.add(sharding_options);
+#ifdef MONGO_SSL
+    visible_options.add(ssl_options);
+#endif
     Module::addOptions( visible_options );
+
 
     setupCoreSignals();
     setupSignals( false );
@@ -771,7 +776,7 @@ static int mongoDbMain(int argc, char* argv[]) {
                 // we need to change dbpath if we fork since we change
                 // cwd to "/"
                 // fork only exists on *nix
-                // so '/' is safe 
+                // so '/' is safe
                 dbpath = cmdLine.cwd + "/" + dbpath;
             }
         }
@@ -817,8 +822,8 @@ static int mongoDbMain(int argc, char* argv[]) {
         if (params.count("durOptions")) {
             cmdLine.durOptions = params["durOptions"].as<int>();
         }
-        if( params.count("journalCommitInterval") ) { 
-            // don't check if dur is false here as many will just use the default, and will default to off on win32. 
+        if( params.count("journalCommitInterval") ) {
+            // don't check if dur is false here as many will just use the default, and will default to off on win32.
             // ie no point making life a little more complex by giving an error on a dev environment.
             cmdLine.journalCommitInterval = params["journalCommitInterval"].as<unsigned>();
             if( cmdLine.journalCommitInterval <= 1 || cmdLine.journalCommitInterval > 300 ) {
@@ -914,7 +919,7 @@ static int mongoDbMain(int argc, char* argv[]) {
             replSettings.autoresync = true;
             if( params.count("replSet") ) {
                 out() << "--autoresync is not used with --replSet" << endl;
-                out() << "see http://www.mongodb.org/display/DOCS/Resyncing+a+Very+Stale+Replica+Set+Member" << endl;
+                out() << "see http://dochub.mongodb.org/core/resyncingaverystalereplicasetmember" << endl;
                 dbexit( EXIT_BADOPTIONS );
             }
         }
@@ -1014,7 +1019,7 @@ static int mongoDbMain(int argc, char* argv[]) {
         if (params.count("pairwith") || params.count("arbiter") || params.count("opIdMem")) {
             out() << "****" << endl;
             out() << "Replica Pairs have been deprecated. Invalid options: --pairwith, --arbiter, and/or --opIdMem" << endl;
-            out() << "<http://www.mongodb.org/display/DOCS/Replica+Pairs>" << endl;
+            out() << "<http://dochub.mongodb.org/core/replicapairs>" << endl;
             out() << "****" << endl;
             dbexit( EXIT_BADOPTIONS );
         }
@@ -1149,14 +1154,6 @@ namespace mongo {
 
 namespace mongo {
 
-    void pipeSigHandler( int signal ) {
-#ifdef psignal
-        psignal( signal, "Signal Received : ");
-#else
-        cout << "got pipe signal:" << signal << endl;
-#endif
-    }
-
     void abruptQuit(int x) {
         ostringstream ossSig;
         ossSig << "Got signal: " << x << " (" << strsignal( x ) << ")." << endl;
@@ -1226,15 +1223,15 @@ namespace mongo {
         addrSignals.sa_sigaction = abruptQuitWithAddrSignal;
         sigemptyset( &addrSignals.sa_mask );
         addrSignals.sa_flags = SA_SIGINFO;
-       
+
         verify( sigaction(SIGSEGV, &addrSignals, 0) == 0 );
         verify( sigaction(SIGBUS, &addrSignals, 0) == 0 );
         verify( sigaction(SIGILL, &addrSignals, 0) == 0 );
         verify( sigaction(SIGFPE, &addrSignals, 0) == 0 );
-        
+
         verify( signal(SIGABRT, abruptQuit) != SIG_ERR );
         verify( signal(SIGQUIT, abruptQuit) != SIG_ERR );
-        verify( signal(SIGPIPE, pipeSigHandler) != SIG_ERR );
+        verify( signal(SIGPIPE, SIG_IGN) != SIG_ERR );
 
         setupSIGTRAPforGDB();
 
@@ -1312,7 +1309,7 @@ namespace mongo {
             NULL);
         if ( INVALID_HANDLE_VALUE == hFile ) {
             DWORD lasterr = GetLastError();
-            log() << "failed to open minidump file " << toUtf8String(dumpFilename) << " : " 
+            log() << "failed to open minidump file " << toUtf8String(dumpFilename) << " : "
                   << errnoWithDescription( lasterr ) << endl;
             return;
         }
@@ -1332,7 +1329,7 @@ namespace mongo {
             NULL);
         if ( FALSE == bstatus ) {
             DWORD lasterr = GetLastError();
-            log() << "failed to create minidump : " 
+            log() << "failed to create minidump : "
                   << errnoWithDescription( lasterr ) << endl;
         }
 
@@ -1379,23 +1376,23 @@ namespace mongo {
 #endif
 
         // In debug builds, give debugger a chance to run
-        if( filtLast ) 
+        if( filtLast )
             return filtLast( excPointers );
         return EXCEPTION_EXECUTE_HANDLER;
     }
 
     // called by mongoAbort()
     extern void (*reportEventToSystem)(const char *msg);
-    void reportEventToSystemImpl(const char *msg) { 
+    void reportEventToSystemImpl(const char *msg) {
         static ::HANDLE hEventLog = RegisterEventSource( NULL, TEXT("mongod") );
-        if( hEventLog ) { 
+        if( hEventLog ) {
             std::wstring s = toNativeString(msg);
             LPCTSTR txt = s.c_str();
             BOOL ok = ReportEvent(
-              hEventLog, EVENTLOG_ERROR_TYPE, 
+              hEventLog, EVENTLOG_ERROR_TYPE,
               0, 0, NULL,
-              1, 
-              0, 
+              1,
+              0,
               &txt,
               0);
             wassert(ok);

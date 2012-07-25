@@ -85,6 +85,21 @@ namespace mongo {
         pBuilder->append(groupName, insides.done());
     }
 
+    DocumentSource::GetDepsReturn DocumentSourceGroup::getDependencies(set<string>& deps) const {
+        // add the _id
+        pIdExpression->addDependencies(deps);
+
+        // add the rest
+        const size_t n = vFieldName.size();
+        for(size_t i = 0; i < n; ++i) {
+            intrusive_ptr<Accumulator> pA((*vpAccumulatorFactory[i])(pExpCtx));
+            pA->addOperand(vpExpression[i]);
+            pA->addDependencies(deps);
+        }
+
+        return EXAUSTIVE;
+    }
+
     intrusive_ptr<DocumentSourceGroup> DocumentSourceGroup::create(
         const intrusive_ptr<ExpressionContext> &pExpCtx) {
         intrusive_ptr<DocumentSourceGroup> pSource(
@@ -94,7 +109,7 @@ namespace mongo {
 
     DocumentSourceGroup::DocumentSourceGroup(
         const intrusive_ptr<ExpressionContext> &pExpCtx):
-        DocumentSource(pExpCtx),
+        SplittableDocumentSource(pExpCtx),
         populated(false),
         pIdExpression(),
         groups(),
@@ -296,7 +311,7 @@ namespace mongo {
                 hasNext = pSource->advance()) {
             intrusive_ptr<Document> pDocument(pSource->getCurrent());
 
-            /* get the _id document */
+            /* get the _id value */
             intrusive_ptr<const Value> pId(pIdExpression->evaluate(pDocument));
 
             /* treat Undefined the same as NULL SERVER-4674 */
@@ -370,9 +385,14 @@ namespace mongo {
         return pResult;
     }
 
-    intrusive_ptr<DocumentSource> DocumentSourceGroup::createMerger() {
-        intrusive_ptr<DocumentSourceGroup> pMerger(
-            DocumentSourceGroup::create(pExpCtx));
+    intrusive_ptr<DocumentSource> DocumentSourceGroup::getShardSource() {
+        return this; // No modifications necessary when on shard
+    }
+
+    intrusive_ptr<DocumentSource> DocumentSourceGroup::getRouterSource() {
+        intrusive_ptr<ExpressionContext> pMergerExpCtx = pExpCtx->clone();
+        pMergerExpCtx->setDoingMerge(true);
+        intrusive_ptr<DocumentSourceGroup> pMerger(DocumentSourceGroup::create(pMergerExpCtx));
 
         /* the merger will use the same grouping key */
         pMerger->setIdExpression(ExpressionFieldPath::create(

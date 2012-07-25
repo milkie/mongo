@@ -48,6 +48,7 @@ namespace mongo {
         _killed = false;
         _numYields = 0;
         _expectedLatencyMs = 0;
+        _lockStat.reset();
     }
 
     void CurOp::reset() {
@@ -175,7 +176,7 @@ namespace mongo {
             b.append("killed", true);
         
         b.append( "numYields" , _numYields );
-        b.append( "lockStatMillis" , _lockStat.report() );
+        b.append( "lockStats" , _lockStat.report() );
 
         return b.obj();
     }
@@ -189,11 +190,6 @@ namespace mongo {
         if( c.curop()->killed() ) {
             uasserted(11601,"operation was interrupted");
         }
-        if( c.sometimes(1024) ) {
-            AbstractMessagingPort *p = cc().port();
-            if( p ) 
-                p->assertStillConnected();
-        }
     }
     
     const char * KillCurrentOp::checkForInterruptNoAssert() {
@@ -202,17 +198,6 @@ namespace mongo {
             return "interrupted at shutdown";
         if( c.curop()->killed() )
             return "interrupted";
-        if( c.sometimes(1024) ) {
-            try { 
-                AbstractMessagingPort *p = cc().port();
-                if( p ) 
-                    p->assertStillConnected();
-            }
-            catch(...) { 
-                log() << "no longer connected to client";
-                return "no longer connected to client";
-            }
-        }
         return "";
     }
 

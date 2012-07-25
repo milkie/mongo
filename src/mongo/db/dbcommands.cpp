@@ -50,6 +50,7 @@
 #include "dur_stats.h"
 #include "../server.h"
 #include "mongo/db/index_update.h"
+#include "mongo/db/repl/bgsync.h"
 
 namespace mongo {
 
@@ -402,7 +403,7 @@ namespace mongo {
             help << "{ profile : <n> }\n";
             help << "0=off 1=log slow ops 2=log all\n";
             help << "-1 to get current values\n";
-            help << "http://www.mongodb.org/display/DOCS/Database+Profiler";
+            help << "http://dochub.mongodb.org/core/databaseprofiler";
         }
         virtual LockType locktype() const { return WRITE; }
         CmdProfile() : Command("profile") {}
@@ -473,7 +474,7 @@ namespace mongo {
                 {
                     BSONObjBuilder ttt( t.subobjStart( "currentQueue" ) );
                     int w=0, r=0;
-                    Client::recommendedYieldMicros( &w , &r );
+                    Client::recommendedYieldMicros( &w , &r, true );
                     ttt.append( "total" , w + r );
                     ttt.append( "readers" , r );
                     ttt.append( "writers" , w );
@@ -522,13 +523,6 @@ namespace mongo {
                 if ( cmdLine.dur ) {
                     m *= 2;
                     t.appendNumber( "mappedWithJournal" , m );
-                }
-                
-                int overhead = v - m - connTicketHolder.used();
-
-                if( overhead > 4000 ) { 
-                    t.append("note", "virtual minus mapped is large. could indicate a memory leak");
-                    LOGATMOST(60) << "warning: virtual size (" << v << "MB) - mapped size (" << m << "MB) is large (" << overhead << "MB). could indicate a memory leak" << endl;
                 }
 
                 t.done();
@@ -590,6 +584,9 @@ namespace mongo {
                     result.append( "opcountersRepl" , replOpCounters.getObj() );
                 }
 
+                if (theReplSet) {
+                    result.append( "replNetworkQueue", replset::BackgroundSync::get()->getCounters());
+                }
             }
 
             timeBuilder.appendNumber( "after repl" , Listener::getElapsedTimeMillis() - start );
@@ -701,7 +698,7 @@ namespace mongo {
         bool adminOnly() const {
             return true;
         }
-        void help(stringstream& h) const { h << "http://www.mongodb.org/display/DOCS/Monitoring+and+Diagnostics#MonitoringandDiagnostics-DatabaseRecord%2FReplay"; }
+        void help(stringstream& h) const { h << "http://dochub.mongodb.org/core/monitoring#MonitoringandDiagnostics-DatabaseRecord%2FReplay%28diagLoggingcommand%29"; }
         virtual LockType locktype() const { return WRITE; }
         bool run(const string& dbname , BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool) {
             int was = _diaglog.setLevel( cmdObj.firstElement().numberInt() );
@@ -1362,7 +1359,12 @@ namespace mongo {
         virtual bool slaveOk() const { return true; }
         virtual LockType locktype() const { return WRITE; }
         virtual bool logTheOp() { return true; }
-        
+        virtual void help( stringstream &help ) const {
+            help << 
+                "Sets collection options.\n"
+                "Example: { collMod: 'foo', usePowerOf2Sizes:true }";
+        }
+
         bool run(const string& dbname, BSONObj& jsobj, int, string& errmsg, BSONObjBuilder& result, bool fromRepl ) {
             string ns = dbname + "." + jsobj.firstElement().valuestr();
             Client::Context ctx( ns );
@@ -1371,25 +1373,36 @@ namespace mongo {
                 errmsg = "ns does not exist";
                 return false;
             }
-
+            
+            bool ok = true;
             int oldFlags = nsd->userFlags();
-
-            if ( jsobj["usePowerOf2Sizes"].type() ) {
-                result.appendBool( "usePowerOf2Sizes_old" , nsd->isUserFlagSet( NamespaceDetails::Flag_UsePowerOf2Sizes ) );
-                if ( jsobj["usePowerOf2Sizes"].trueValue() ) {
-                    nsd->setUserFlag( NamespaceDetails::Flag_UsePowerOf2Sizes );
+            
+            BSONObjIterator i( jsobj );
+            while ( i.more() ) {
+                const BSONElement& e = i.next();
+                if ( str::equals( "collMod", e.fieldName() ) ) {
+                    // no-op
+                }
+                else if ( str::equals( "usePowerOf2Sizes", e.fieldName() ) ) {
+                    result.appendBool( "usePowerOf2Sizes_old" , nsd->isUserFlagSet( NamespaceDetails::Flag_UsePowerOf2Sizes ) );
+                    if ( e.trueValue() ) {
+                        nsd->setUserFlag( NamespaceDetails::Flag_UsePowerOf2Sizes );
+                    }
+                    else {
+                        nsd->clearUserFlag( NamespaceDetails::Flag_UsePowerOf2Sizes );
+                    }
                 }
                 else {
-                    nsd->clearUserFlag( NamespaceDetails::Flag_UsePowerOf2Sizes );
+                    errmsg = str::stream() << "unknown command: " << e.fieldName();
+                    ok = false;
                 }
-                
             }
             
             if ( oldFlags != nsd->userFlags() ) {
                 nsd->syncUserFlags( ns );
             }
 
-            return true;
+            return ok;
         }
     } collectionModCommand;
 
@@ -1854,8 +1867,8 @@ namespace mongo {
         // but we already have temporary auth credentials set.
         if ( ai->usingInternalUser() && !ai->hasTemporaryAuthorization() ) {
             // The temporary authentication will be cleared when authRelease goes out of scope
-            if ( cmdObj.hasField("$auth") ) {
-                BSONObj authObj = cmdObj["$auth"].Obj();
+            if ( cmdObj.hasField(AuthenticationTable::fieldName.c_str()) ) {
+                BSONObj authObj = cmdObj[AuthenticationTable::fieldName].Obj();
                 ai->setTemporaryAuthorization( authObj );
             } else {
                 result.append( "errmsg" ,

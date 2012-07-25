@@ -33,7 +33,7 @@ DBQuery.prototype.help = function () {
     print("\t.explain([verbose])")
     print("\t.hint(...)")
     print("\t.addOption(n) - adds op_query options -- see wire protocol")
-    print("\t._addSpecial(name, value) - http://www.mongodb.org/display/DOCS/Advanced%20Queries#AdvancedQueries-Metaqueryoperators")
+    print("\t._addSpecial(name, value) - http://dochub.mongodb.org/core/advancedqueries#AdvancedQueries-Metaqueryoperators")
     print("\t.batchSize(n) - sets the number of docs to return per getMore")
     print("\t.showDiskLoc() - adds a $diskLoc field to each returned object")
     print("\t.min(idxDoc)")
@@ -238,6 +238,26 @@ DBQuery.prototype.showDiskLoc = function() {
     return this._addSpecial( "$showDiskLoc" , true);
 }
 
+/**
+ * Sets the read preference for this cursor.
+ * 
+ * @param mode {string} read prefrence mode to use.
+ * @param tagSet {Array.<Object>} optional. The list of tags to use, order matters.
+ * 
+ * @return this cursor
+ */
+DBQuery.prototype.readPref = function( mode, tagSet ) {
+    var readPrefObj = {
+        mode: mode
+    };
+
+    if ( tagSet ){
+        readPrefObj.tags = tagSet;
+    }
+
+    return this._addSpecial( "$readPreference", readPrefObj );
+};
+
 DBQuery.prototype.forEach = function( func ){
     while ( this.hasNext() )
         func( this.next() );
@@ -345,7 +365,7 @@ DBQuery.shellBatchSize = 20;
 
 /**
  * Query option flag bit constants.
- * @see http://www.mongodb.org/display/DOCS/Mongo+Wire+Protocol#MongoWireProtocol-OPQUERY
+ * @see http://dochub.mongodb.org/core/mongowireprotocol#MongoWireProtocol-OPQUERY
  */
 DBQuery.Option = {
     tailable: 0x2,

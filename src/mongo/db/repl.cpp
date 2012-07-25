@@ -93,12 +93,12 @@ namespace mongo {
         virtual bool logTheOp() { return false; }
         virtual bool lockGlobally() const { return true; }
         virtual LockType locktype() const { return WRITE; }
-        void help(stringstream&h) const { h << "resync (from scratch) an out of date replica slave.\nhttp://www.mongodb.org/display/DOCS/Master+Slave"; }
+        void help(stringstream&h) const { h << "resync (from scratch) an out of date replica slave.\nhttp://dochub.mongodb.org/core/masterslave"; }
         CmdResync() : Command("resync") { }
         virtual bool run(const string& , BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool fromRepl) {
             if( cmdLine.usingReplSets() ) {
                 errmsg = "resync command not currently supported with replica sets.  See RS102 info in the mongodb documentations";
-                result.append("info", "http://www.mongodb.org/display/DOCS/Resyncing+a+Very+Stale+Replica+Set+Member");
+                result.append("info", "http://dochub.mongodb.org/core/resyncingaverystalereplicasetmember");
                 return false;
             }
 
@@ -148,7 +148,7 @@ namespace mongo {
     void appendReplicationInfo( BSONObjBuilder& result , bool authed , int level ) {
 
         if ( replSet ) {
-            if( theReplSet == 0 ) {
+            if( theReplSet == 0 || theReplSet->state().shunned() ) {
                 result.append("ismaster", false);
                 result.append("secondary", false);
                 result.append("info", ReplSet::startupStatusMsg.get());
@@ -1554,7 +1554,7 @@ namespace mongo {
             // can b 1.
             if( isMaster() ) return;
             uassert(13435, "not master and slaveOk=false",
-                    !pq || pq->hasOption(QueryOption_SlaveOk));
+                    !pq || pq->hasOption(QueryOption_SlaveOk) || pq->hasReadPref());
             uassert(13436,
                     string("not master or secondary; cannot currently read from this replSet member; state:") + 
                     (theReplSet->state()).toString(),
