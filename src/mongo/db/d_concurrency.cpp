@@ -283,19 +283,21 @@ namespace mongo {
     }
 
     Lock::ScopedLock::ScopedLock( char type ) 
-        : _type(type), _stat(0) {
+        : _recorded(false), _type(type), _stat(0) {
         LockState& ls = lockState();
         ls.enterScopedLock( this );
     }
     Lock::ScopedLock::~ScopedLock() { 
+        dassert( _recorded ); // assert that aboutToUnlock() got called earlier
         LockState& ls = lockState();
         int prevCount = ls.recursiveCount();
         Lock::ScopedLock* what = ls.leaveScopedLock();
         fassert( 16171 , prevCount != 1 || what == this );
-
-        _recordTime( _timer.micros() );
     }
-    
+    void Lock::ScopedLock::aboutToUnlock() { 
+        _recordTime( _timer.micros() );
+        _recorded = true;
+    }
     long long Lock::ScopedLock::acquireFinished( LockStat* stat ) {
         long long acquisitionTime = _timer.micros();
         _timer.reset();
@@ -414,6 +416,7 @@ namespace mongo {
         }
     }
     Lock::GlobalWrite::~GlobalWrite() {
+        aboutToUnlock();
         if( noop ) { 
             return;
         }
@@ -460,6 +463,7 @@ namespace mongo {
         }
     }
     Lock::GlobalRead::~GlobalRead() {
+        aboutToUnlock();
         if( !noop ) {
             qlk.unlock_R();
         }
@@ -610,9 +614,11 @@ namespace mongo {
     }
 
     Lock::DBWrite::~DBWrite() {
+        aboutToUnlock();
         unlockDB();
     }
     Lock::DBRead::~DBRead() {
+        aboutToUnlock();
         unlockDB();
     }
 

@@ -1133,6 +1133,7 @@ static int mongoDbMain(int argc, char* argv[]) {
     }
 
     StartupTest::runTests();
+
     initAndListen(cmdLine.port);
     dbexit(EXIT_CLEAN);
     return 0;

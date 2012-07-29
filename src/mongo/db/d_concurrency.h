@@ -103,12 +103,17 @@ namespace mongo {
             virtual void _tempRelease() = 0;
             virtual void _relock() = 0;
 
+            // call this from subclasses right before unlocking (e.g., in the ~DBRead destructor)
+            // we check the timer before unlocking as we are apt to be context switched out when we unlock
+            void aboutToUnlock();
+
         private:
             ParallelBatchWriterSupport _pbws_lk;
 
         private:
             void _recordTime( long long micros );
             Timer _timer;
+            bool _recorded;
             char _type;      // 'r','w','R','W'
             LockStat* _stat; // the stat for the relevant lock to increment when we're done
         };
